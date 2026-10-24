@@ -36,7 +36,7 @@ class TasksSettingsMixin:
             return
         for child in self.tasks_list.winfo_children():
             child.destroy()
-        for task in self.tasks:
+        for index, task in enumerate(self.tasks):
             row = card(self.tasks_list)
             row.pack(fill="x", pady=5)
 
@@ -45,6 +45,7 @@ class TasksSettingsMixin:
             label(top, task.name or "untitled", size=14, bold=True).pack(side="left")
             ghost_btn(top, "Delete", lambda t=task: self.delete_task(t)).pack(side="right")
             ghost_btn(top, "Edit", lambda t=task: self.edit_task(t)).pack(side="right", padx=6)
+            self._task_order_buttons(top, task.id, index, len(self.tasks))
 
             label(
                 row,
@@ -58,6 +59,16 @@ class TasksSettingsMixin:
     def add_task(self) -> None:
         self.edit_task()
 
+    def move_regression_task(self, task_id, direction) -> None:
+        if self.active_run is not None:
+            return
+        index = next((i for i, task in enumerate(self.tasks) if task.id == task_id), -1)
+        destination = index + direction
+        if index >= 0 and 0 <= destination < len(self.tasks):
+            self.tasks[index], self.tasks[destination] = self.tasks[destination], self.tasks[index]
+            self.save_state()
+            self.refresh_tasks()
+            self.refresh_run()
     def edit_task(self, task=None) -> None:
         dialog = ctk.CTkToplevel(self)
         dialog.title("Edit regression task" if task else "Add regression task")
@@ -107,7 +118,7 @@ class TasksSettingsMixin:
         self.set_key = entry(body, width=520)
         self.set_key.pack(anchor="w", padx=14)
         self.set_key.configure(show="*")
-        self.set_engine_note = label(body, "", size=11, color=C["muted"])
+        self.set_engine_note = label(body, "", size=11, color=C["muted"], wraplength=620, justify="left")
         self.set_engine_note.pack(anchor="w", padx=14, pady=(4, 0))
         self.set_model = self._field(body, "Model name (browser-use)")
         self.set_url = self._field(body, "Base site URL")
@@ -166,15 +177,22 @@ class TasksSettingsMixin:
         self.set_key.delete("0", "end")
         self.set_key.insert(0, self._key_drafts["skyvern_key" if skyvern else "openai_key"])
         self.set_engine_note.configure(text=(
+            "Broad functional checks: if the requested flow works, it passes. Unrelated app issues do not fail the task. "
             "Skyvern uses a cloud browser and needs a publicly reachable site URL."
-            if skyvern else "browser-use uses your OpenAI API key and runs Chromium locally."
+            if skyvern else "Detailed checks: reports console errors, page errors and failed requests, including other bugs in the app. "
+            "These can fail a task even when the requested flow works. Uses your OpenAI API key and a local browser."
         ))
         self.set_model.configure(state="disabled" if skyvern else "normal")
+        self.ai_model.configure(text="Skyvern" if skyvern else "browser-use")
 
     def _change_engine(self, engine) -> None:
         key = "skyvern_key" if self._key_engine == "skyvern" else "openai_key"
         self._key_drafts[key] = self.set_key.get().strip()
         self._show_engine_key(engine)
+        self.settings["engine"] = engine
+        self.save_state()
+        self.refresh_run()
+        self.settings_note.configure(text="Engine selected; save key/model changes below.")
 
     def pick_repo(self) -> None:
         path = filedialog.askdirectory()
@@ -207,7 +225,7 @@ class TasksSettingsMixin:
             }
         )
         self.save_state()
-        self.ai_model.configure(text="Skyvern" if self.settings["engine"] == "skyvern" else self.settings["model"])
+        self.ai_model.configure(text="Skyvern" if self.settings["engine"] == "skyvern" else "browser-use")
         self.settings_note.configure(text="Saved")
         self.monitor.start(self.settings["repo_path"])
         self.refresh_run()

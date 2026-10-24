@@ -9,46 +9,31 @@ from .widgets import card, ghost_btn, label, pill, primary_btn
 
 
 class RunPageMixin:
-    """Fix trajectory, regression checkboxes, live steps and result panel."""
+    """Regression task queue, live steps and result panel."""
 
     def _build_run(self, parent) -> None:
         left = ctk.CTkFrame(parent, fg_color="transparent")
         left.pack(side="left", fill="both", expand=True, padx=(22, 10), pady=16)
+        left.grid_columnconfigure(0, weight=1)
+        left.grid_rowconfigure(0, weight=1, minsize=220)
+        left.grid_rowconfigure(3, weight=1, minsize=200)
         right = ctk.CTkFrame(parent, fg_color="transparent", width=360)
         right.pack(side="right", fill="y", padx=(0, 22), pady=16)
         right.pack_propagate(False)
 
-        fix = card(left)
-        fix.pack(fill="x")
-        label(fix, "Fix + trajectory", size=12, color=C["muted"], bold=True).pack(
-            anchor="w", padx=12, pady=(10, 2)
-        )
-        self.run_fix = ctk.CTkTextbox(
-            fix,
-            fg_color=C["panel"],
-            text_color=C["text"],
-            border_color=C["border"],
-            border_width=1,
-            font=(MONO, 12),
-            height=120,
-        )
-        self.run_fix.pack(fill="x", padx=12, pady=(0, 10))
-        self.run_fix.insert("1.0", self.settings.get("fix_text", ""))
-
         regs = card(left)
-        regs.pack(fill="x", pady=(10, 0))
+        regs.grid(row=0, column=0, sticky="nsew")
         head = ctk.CTkFrame(regs, fg_color="transparent")
         head.pack(fill="x", padx=12, pady=(10, 4))
         label(head, "Regression tasks", size=12, color=C["muted"], bold=True).pack(side="left")
         ghost_btn(head, "+ Add regression task", lambda: self.show_page("Regression Tasks")).pack(
             side="right"
         )
-        self.run_checks = ctk.CTkFrame(regs, fg_color="transparent")
-        self.run_checks.pack(fill="x", padx=12, pady=(0, 10))
-        self.current_fix = ctk.BooleanVar(value=self.settings.get("test_current_fix", True))
+        self.run_checks = ctk.CTkScrollableFrame(regs, fg_color="transparent", height=220)
+        self.run_checks.pack(fill="both", expand=True, padx=12, pady=(0, 10))
 
         opts = ctk.CTkFrame(left, fg_color="transparent")
-        opts.pack(fill="x", pady=(12, 0))
+        opts.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         self.run_headless = ctk.CTkSwitch(
             opts,
             text="Show browser live",
@@ -64,11 +49,12 @@ class RunPageMixin:
         primary_btn(opts, "Launch agent in browser", lambda: self.launch_agent()).pack(
             side="right"
         )
-        self.browser_note = label(left, "", size=11, color=C["muted"], anchor="w")
-        self.browser_note.pack(fill="x", pady=(4, 0))
+        self.browser_note = label(left, "", size=11, color=C["muted"], anchor="w", justify="left", wraplength=500)
+        self.browser_note.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        self.browser_note.bind("<Configure>", lambda event: self.browser_note.configure(wraplength=max(200, event.width)))
 
         log = card(left)
-        log.pack(fill="both", expand=True, pady=(12, 0))
+        log.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
         label(log, "Live steps", size=12, color=C["muted"], bold=True).pack(
             anchor="w", padx=12, pady=(10, 2)
         )
@@ -105,6 +91,11 @@ class RunPageMixin:
             cause, "—", size=11, color=C["muted"], wraplength=320, justify="left"
         )
         self.result_details.pack(anchor="w", padx=12, pady=(2, 12))
+        self.verdict_title = label(cause, "Task verdicts", size=12, bold=True)
+        self.verdict_title.pack(anchor="w", padx=12, pady=(0, 4))
+        self.task_verdicts = ctk.CTkScrollableFrame(cause, fg_color="transparent")
+        self.task_verdicts.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self._verdict_rows = {}
 
     def refresh_run(self) -> None:
         if not hasattr(self, "run_checks"):
@@ -115,26 +106,50 @@ class RunPageMixin:
             state="disabled" if self.active_run is not None else "normal",
         )
         self.browser_note.configure(text=(
-            "Opens Skyvern's live session in your default browser."
-            if skyvern else "Shows a separate browser window while the tests run."
+            "Broad checks: a working flow passes despite unrelated app issues.\n"
+            "Live view opens Skyvern's session in your default browser."
+            if skyvern else "Detailed checks: other app bugs can fail a task even if its flow works.\n"
+            "Live view shows a separate browser window."
         ))
         for child in self.run_checks.winfo_children():
             child.destroy()
-        ctk.CTkCheckBox(
-            self.run_checks, text="Current fix (trajectory above)", variable=self.current_fix,
-            command=lambda: self._save_test_selection(),
-        ).pack(anchor="w", pady=1)
-        for task in self.tasks:
+        if self.active_run is not None and self.run_task_queue:
+            pending = [case["id"] for case in self.run_task_queue if case["status"] == "queued"]
+            for case in self.run_task_queue:
+                row = ctk.CTkFrame(self.run_checks, fg_color="transparent")
+                row.pack(fill="x", pady=2)
+                label(row, case["name"], size=12).pack(side="left")
+                pill(row, case["status"]).pack(side="right", padx=4)
+                if case["id"] in pending:
+                    position = pending.index(case["id"])
+                    self._task_order_buttons(row, case["id"], position, len(pending), live=True)
+            return
+        if not self.tasks:
+            label(self.run_checks, "Add a regression task to start testing.", size=12, color=C["muted"]).pack(
+                anchor="w", pady=8)
+        for index, task in enumerate(self.tasks):
+            row = ctk.CTkFrame(self.run_checks, fg_color="transparent")
+            row.pack(fill="x", pady=2)
             var = ctk.BooleanVar(value=task.enabled)
             ctk.CTkCheckBox(
-                self.run_checks,
+                row,
                 text=task.name,
                 variable=var,
                 font=(FONT, 12),
                 text_color=C["text"],
                 fg_color=C["accent"],
                 command=lambda v=var, t=task: self._save_test_selection(t, bool(v.get())),
-            ).pack(anchor="w", pady=1)
+                state="disabled" if self.active_run is not None else "normal",
+            ).pack(side="left")
+            self._task_order_buttons(row, task.id, index, len(self.tasks))
+
+    def _task_order_buttons(self, parent, task_id, position, total, live=False):
+        for text, direction, available in (("↓", 1, position < total - 1), ("↑", -1, position > 0)):
+            command = (lambda tid=task_id, d=direction: self.runner.move_pending_task(tid, d)) if live else (
+                lambda tid=task_id, d=direction: self.move_regression_task(tid, d))
+            ghost_btn(parent, text, command, width=30,
+                      state="normal" if available and (live or self.active_run is None) else "disabled").pack(
+                          side="right", padx=2)
 
     def _append_log(self, text: str) -> None:
         if not hasattr(self, "run_log"):
@@ -150,6 +165,10 @@ class RunPageMixin:
         if self.active_run is not None or self.runner.busy:
             self._append_log("A test is already running. Wait for it to finish or cancel it.")
             return
+        selected_tasks = [task for task in self.tasks if task.enabled]
+        if not selected_tasks and record is None:
+            self._append_log("Select at least one regression task before launching.")
+            return
         rec = record
         if rec is None:
             rec = RunRecord(
@@ -158,15 +177,13 @@ class RunPageMixin:
             self.history.insert(0, rec)
         self.current = rec
         self.active_run = rec
+        self.run_task_queue = []
 
         rec.status = "running"
         rec.path = self.settings.get("base_url") or "http://localhost:3000"
-        if rec.tag != "commit":
-            rec.description = self.run_fix.get("1.0", "end").strip()
+        rec.description = f"{len(selected_tasks)} regression task(s)"
         rec.report = {}
-        self.settings.update(fix_text=rec.description,
-                             show_browser=bool(self.run_headless.get()),
-                             test_current_fix=bool(self.current_fix.get()))
+        self.settings["show_browser"] = bool(self.run_headless.get())
         self.save_state()
         self._show_result(rec)
         self.show_page("Run Agent")
@@ -178,9 +195,7 @@ class RunPageMixin:
 
         accepted = self.runner.submit(
             self.settings,
-            None,
-            rec.description,
-            [t for t in self.tasks if t.enabled],
+            selected_tasks,
             headless=not bool(self.run_headless.get()),
         )
         if not accepted:
@@ -198,11 +213,23 @@ class RunPageMixin:
     def _save_test_selection(self, task=None, enabled=None):
         if task is not None:
             task.enabled = enabled
-        self.settings["test_current_fix"] = bool(self.current_fix.get())
         self.save_state()
 
     def _show_result(self, rec) -> None:
         if not hasattr(self, "result_title"):
+            return
+        record_id = rec.id if rec is not None else None
+        if getattr(self, "_verdict_record_id", None) != record_id:
+            for row in self._verdict_rows.values():
+                row.destroy()
+            self._verdict_rows.clear()
+            self._verdict_record_id = record_id
+        if rec is None:
+            self.result_title.configure(text="No run yet", text_color=C["text"])
+            self.result_pill.configure(text="QUEUED", fg_color=C["violet"])
+            for box in (self.result_step, self.result_url, self.result_name, self.result_details):
+                box.configure(text="—")
+            self._show_task_verdicts({})
             return
         rep = rec.report or {}
         ok = rec.status == "passed"
@@ -216,3 +243,24 @@ class RunPageMixin:
         self.result_url.configure(text=rep.get("stopped_url") or "—")
         self.result_name.configure(text=rep.get("failed_test_name") or "—")
         self.result_details.configure(text=rep.get("error_details") or "—")
+        self._show_task_verdicts(rep)
+
+    def _show_task_verdicts(self, report):
+        results = report.get("task_results", [])
+        self.verdict_title.configure(text=f"Task verdicts ({len(results)}/{report.get('total_tasks', len(results))})")
+        ids = {result["task_id"] for result in results}
+        for task_id in list(self._verdict_rows):
+            if task_id not in ids:
+                self._verdict_rows.pop(task_id).destroy()
+        for result in results:
+            task_id = result["task_id"]
+            if task_id in self._verdict_rows:
+                continue
+            row = card(self.task_verdicts)
+            row.pack(fill="x", pady=3)
+            self._verdict_rows[task_id] = row
+            label(row, result["task_name"], size=12, bold=True, wraplength=270).pack(anchor="w", padx=8, pady=(6, 2))
+            pill(row, result["status"].lower()).pack(anchor="w", padx=8, pady=2)
+            details = result["error_details"] or "Expected outcome verified."
+            label(row, details, size=11, color=C["muted"], wraplength=270, justify="left").pack(
+                anchor="w", padx=8, pady=(2, 6))

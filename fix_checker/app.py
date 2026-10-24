@@ -46,6 +46,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         self.current: Optional[RunRecord] = None
         self.active_run: Optional[RunRecord] = None
         self.pending_runs = []
+        self.run_task_queue = []
         self.ui_events = queue.Queue()
         self.runner = BrowserAgentRunner()
         self.monitor = GitMonitor(self.on_commit)
@@ -70,8 +71,6 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
             "repo_path": "",
             "auto_run": True,
             "engine": "skyvern",
-            "test_current_fix": True,
-            "fix_text": "",
             "show_browser": False,
         }
 
@@ -80,7 +79,8 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         data = load_json(SETTINGS_FILE, {})
         if isinstance(data, dict):
             merged.update(data)
-        merged.pop("target_path", None)
+        for obsolete in ("target_path", "test_current_fix", "fix_text"):
+            merged.pop(obsolete, None)
         merged["openai_key"] = merged.get("openai_key") or os.getenv("OPENAI_API_KEY", "")
         merged["skyvern_key"] = merged.get("skyvern_key") or os.getenv("SKYVERN_API_KEY", "")
         return merged
@@ -159,7 +159,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         label(ai, "AI", size=12, color=C["muted"], bold=True).pack(
             anchor="w", padx=12, pady=(10, 0)
         )
-        model = "Skyvern" if self.settings["engine"] == "skyvern" else self.settings["model"]
+        model = "Skyvern" if self.settings["engine"] == "skyvern" else "browser-use"
         self.ai_model = label(ai, model, size=13, bold=True)
         self.ai_model.pack(anchor="w", padx=12)
         primary_btn(ai, "Test latest commit", self.test_latest).pack(
@@ -233,6 +233,14 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
             self._append_log(item.get("text", ""))
         elif kind == "error":
             self._append_log(f"ERROR: {item.get('text', '')}")
+        elif kind == "task_queue":
+            self.run_task_queue = item["tasks"]
+            self.refresh_run()
+        elif kind == "task_result" and self.active_run is not None:
+            self.active_run.report.setdefault("task_results", []).append(item["result"])
+            self.active_run.report["total_tasks"] = item["total"]
+            self._show_result(self.active_run)
+            self.save_state()
         elif kind == "browser_view":
             url = item.get("url", "")
             self._append_log(f"Live browser: {url}")
@@ -251,7 +259,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
     def _record_commit(self, sha: str, message: str) -> None:
         rec = RunRecord(
             title=message,
-            description=self.run_fix.get("1.0", "end").strip(),
+            description=f"{sum(task.enabled for task in self.tasks)} regression task(s)",
             commit=sha,
             path=self.settings.get("base_url") or "http://localhost:3000",
             status="queued",
@@ -259,9 +267,9 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         )
         self.history.insert(0, rec)
         self.current = rec
-        self.refresh_history()
         if self.settings.get("auto_run"):
             self.pending_runs.append(rec)
+        self.refresh_history()
         self.save_state()
 
     def test_latest(self) -> None:
@@ -296,11 +304,20 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
             rec.report = (
                 report.model_dump() if hasattr(report, "model_dump") else dict(report.__dict__)
             )
+        self.active_run = None
+        self.run_task_queue = []
         self.save_state()
         self.refresh_history()
         self._show_result(rec)
-        self.active_run = None
         self.refresh_run()
+
+    def move_pending_run(self, run_id, direction) -> None:
+        index = next((i for i, run in enumerate(self.pending_runs) if run.id == run_id), -1)
+        destination = index + direction
+        if index >= 0 and 0 <= destination < len(self.pending_runs):
+            self.pending_runs[index], self.pending_runs[destination] = (
+                self.pending_runs[destination], self.pending_runs[index])
+            self.refresh_home()
 
     def refresh_history(self) -> None:
         if not hasattr(self, "hist_list"):
@@ -321,8 +338,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         if getattr(self, "_closing", False):
             return
         self._closing = True
-        self.settings.update(fix_text=self.run_fix.get("1.0", "end").strip(),
-                             show_browser=bool(self.run_headless.get()))
+        self.settings["show_browser"] = bool(self.run_headless.get())
         self.save_state()
         self.monitor.stop()
         self.runner.close()

@@ -41,14 +41,14 @@ install both in the same environment. `setup.ps1` keeps them separate.
    **Skyvern API key** (or set `SKYVERN_API_KEY` before starting the app). For
    browser-use, enter your **OpenAI API key** (or set `OPENAI_API_KEY`) and model
    `gpt-6-luna`. Each engine's key is stored separately; changing engines updates
-   the field label and preserves both keys.
+   the sidebar AI name immediately and preserves both keys. The selected engine
+   applies immediately; save changes to key, model and other fields separately.
 2. Enter the base URL of your running site and select a local Git repository.
    Skyvern Cloud needs a publicly reachable site URL. Use browser-use for
    localhost sites. Save settings.
 3. In Regression Tasks, add or edit each flow's name and precise steps, including
    navigation, prerequisites, test credentials if needed and expected results.
-4. In Run Agent, describe the fix trajectory and select the current fix and/or
-   saved regressions. Runs start at the exact Base site URL from Settings;
+4. In Run Agent, select the regression tasks to run. Runs start at the exact Base site URL from Settings;
    describe any further navigation in the test steps.
 5. Enable Show browser live before launching to watch the run. With browser-use,
    this opens a local Chromium window; with Skyvern, it opens the cloud session's
@@ -58,7 +58,8 @@ install both in the same environment. `setup.ps1` keeps them separate.
    commit. Cancel also requests cancellation of an active Skyvern Cloud run.
 
 The monitor polls local HEAD every three seconds; it does not poll GitHub's API.
-New commits queue while a test is running. The selected repo can be changed or
+New commits queue while a test is running. Use the up/down arrows on a queued
+Home card to change the order of waiting commit runs. The selected repo can be changed or
 cleared in Settings. Checking a commit does not build, deploy or switch the site
 itself: the website URL must already serve the version you intend to verify.
 
@@ -70,15 +71,36 @@ browser-use. Skyvern runs in a separate process and streams status logs to the
 application's background asyncio worker. Cloud browsers cannot reach your
 machine's localhost; provide a public deployment or a URL exposed through a
 tunnel. When live viewing is enabled, a dedicated Skyvern browser session is
-created for the run and closed when the run finishes or is cancelled.
+created for each task and closed when that task finishes or is cancelled.
 browser-use operates on an isolated local Chromium profile, including for
 localhost sites, and uses its native ChatOpenAI adapter with the OpenAI key.
+Choose browser-use for detailed diagnostics: observed page/console errors and
+HTTP 404/5xx failures can fail a task even when the requested function works,
+exposing other bugs in the app. Choose Skyvern for a broader functional check:
+the requested flow passes when its expected outcome works, and unrelated console
+errors, failed background requests or cosmetic issues do not fail the task.
+The engine descriptions in Settings and Run Agent explain this distinction.
 
 The desktop event pump receives worker messages through queues. Browsing and AI
-calls run outside the Tk thread. A run is limited to 100 agent steps and 15
-minutes. For browser-use, the first observed JavaScript/console error, HTTP 404 or
-HTTP 5xx stops the run and produces FAILED with the URL, current agent step and
-error. Skyvern Cloud follows the test instructions and returns its structured
+calls run outside the Tk thread. Each selected task runs separately in a fresh
+browser, with a limit of 100 agent steps and 15 minutes per task. Include all
+required navigation and login prerequisites in each task's steps. A failed task
+gets a FAILED verdict and the queue continues with the next task, including when
+an engine raises an error. The overall run passes only if every task passes.
+The result panel shows each task's verdict and failure details, and these results
+are saved in history as `task_results`. Cancel stops the suite and labels remaining
+tasks as not run due to cancellation.
+
+The regression list and live log each expand to share the Run Agent page's
+available height; the task list scrolls rather than squeezing other controls.
+Use up/down arrows in
+Regression Tasks or Run Agent to save a task order before launching. During a run,
+the arrows reorder tasks that are still waiting; completed/running tasks stay in
+place. Changing the live queue does not change the saved order for future runs.
+
+For browser-use, an observed JavaScript/console error, HTTP 404 or HTTP 5xx fails
+the current task with the URL, current agent step and error, then continues the
+queue. Skyvern Cloud follows the test instructions and returns its structured
 report; local browser diagnostic listeners do not attach to cloud runs.
 Only a validated structured agent result can produce PASSED:
 
@@ -99,6 +121,10 @@ must report failure rather than inventing an account. AI-driven checks still
 require review of the recorded evidence and clear expected outcomes.
 
 Home supports search, status/source filters and viewing historical reports.
+Each card has a selection checkbox. Select all selects the currently filtered
+cards; Delete selected removes them from Home, the sidebar and saved history.
+Deleting a waiting commit run also removes it from the pending queue. The active
+run is protected until it finishes.
 Home reuses existing run cards and groups rapid search input, keeping navigation,
 filtering and status updates responsive as history grows.
 History and Home refresh every 60 seconds, including relative timestamps, and

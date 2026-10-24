@@ -21,6 +21,9 @@ def report(status="PASSED"):
     return TestReport(status=status, stopped_at_step=3, stopped_url="http://localhost/done",
                       failed_test_name="", error_details="")
 
+def regression():
+    return [RegressionTask(name="Fixture", steps="Click Save and verify Saved")]
+
 
 class ReportsAndPaths(unittest.TestCase):
     def test_report_requires_all_fields_and_never_guesses_success(self):
@@ -34,18 +37,25 @@ class ReportsAndPaths(unittest.TestCase):
         site_url = "https://site.test/app/checks?mode=test#current"
         self.assertEqual(target_url(site_url), site_url)
         self.assertIn(f"Target page: {site_url}", BrowserAgentRunner.build_prompt(
-            {"base_url": site_url}, None, "Click Save", []))
+            {"base_url": site_url}, "Click Save"))
         self.assertEqual(target_url("http://localhost:3000", "/login"), "http://localhost:3000/login")
         self.assertEqual(target_url("https://site.test", "https://other.test/path"), "https://other.test/path")
         for base, path in [("broken", "/"), ("https://site.test", "file:///a"), ("https://site.test", "//other")]:
             with self.assertRaises(ValueError):
                 target_url(base, path)
         text = BrowserAgentRunner.build_prompt(
-            {"base_url": "https://site.test", "test_current_fix": False}, "/", "EXCLUDED_FIX",
-            [RegressionTask(name="SELECTED", steps="Open /x and click"),
-             RegressionTask(name="EXCLUDED_TASK", enabled=False)])
+            {"base_url": "https://site.test", "task_name": "SELECTED"}, "Open /x and click")
         self.assertIn("SELECTED", text)
-        self.assertNotIn("EXCLUDED", text)
+        self.assertNotIn("Current fix", text)
+
+    def test_engine_prompts_have_distinct_pass_fail_policies(self):
+        broad = BrowserAgentRunner.build_prompt({"engine": "skyvern"}, "Click Save")
+        detailed = BrowserAgentRunner.build_prompt({"engine": "browser-use"}, "Click Save")
+        self.assertIn("If the requested flow works, return PASSED", broad)
+        self.assertIn("Do not fail the task for unrelated console errors", broad)
+        self.assertNotIn("makes this task FAILED", broad)
+        self.assertIn("even if the requested flow works", detailed)
+        self.assertIn("makes this task FAILED", detailed)
 
     def test_atomic_storage_and_corrupt_input(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -75,10 +85,72 @@ class RunnerLifecycle(unittest.TestCase):
 
     def test_missing_key_emits_one_failure_and_completes(self):
         with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
-            self.assertTrue(self.runner.submit({"base_url": "http://localhost"}, "/", "click", [], True))
+            self.assertTrue(self.runner.submit({"base_url": "http://localhost"}, regression(), True))
             result = self.done()
         self.assertEqual(result.status, "FAILED")
         self.assertIn("API key", result.error_details)
+
+    def test_failed_task_and_engine_exception_do_not_stop_remaining_tasks_for_either_engine(self):
+        @asynccontextmanager
+        async def browser(*args):
+            yield "http://localhost:1234"
+        self.runner._browser = browser
+        tasks = [RegressionTask(id=str(i), name=f"Test {i}", steps=f"Check {i}") for i in range(3)]
+        for engine in ("browser-use", "skyvern"):
+            with self.subTest(engine=engine):
+                adapter = AsyncMock(side_effect=[report("FAILED"), RuntimeError("Fixture failure"), report()])
+                self.runner._browser_use = adapter
+                self.runner._skyvern = adapter
+                self.runner.submit(dict(base_url="https://example.test", engine=engine,
+                    openai_key="dummy", skyvern_key="dummy"), tasks, True)
+                result = self.done()
+                self.assertEqual(adapter.await_count, 3)
+                self.assertEqual(result.status, "FAILED")
+                self.assertEqual([task.status for task in result.task_results], ["FAILED", "FAILED", "PASSED"])
+                self.assertEqual([task.task_id for task in result.task_results], ["0", "1", "2"])
+                self.assertIn("Fixture failure", result.task_results[1].error_details)
+                self.assertIn("1/3 passed", result.error_details)
+
+    def test_waiting_tasks_can_be_reordered_during_execution(self):
+        started = threading.Event()
+        gate = asyncio.Event()
+        @asynccontextmanager
+        async def browser(*args):
+            yield "http://localhost:1234"
+        async def engine(settings, *args):
+            if settings["task_name"] == "First":
+                started.set()
+                await gate.wait()
+            return report()
+        self.runner._browser = browser
+        self.runner._browser_use = engine
+        tasks = [RegressionTask(id=name, name=name, steps="Click") for name in ("First", "Second", "Third")]
+        self.runner.submit(dict(base_url="http://localhost", openai_key="dummy"), tasks, True)
+        self.assertTrue(started.wait(5))
+        self.runner.move_pending_task("First", 1)  # Running task stays in place.
+        self.runner.move_pending_task("Third", -1)
+        self.runner.loop.call_soon_threadsafe(gate.set)
+        result = self.done()
+        self.assertEqual([task.task_name for task in result.task_results], ["First", "Third", "Second"])
+
+    def test_cancel_stops_suite_and_marks_remaining_tasks_as_not_run(self):
+        started = threading.Event()
+        @asynccontextmanager
+        async def browser(*args):
+            yield "http://localhost:1234"
+        async def engine(*args):
+            started.set()
+            await asyncio.sleep(60)
+        self.runner._browser = browser
+        self.runner._browser_use = AsyncMock(side_effect=engine)
+        tasks = [RegressionTask(name=f"Test {i}", steps="Click") for i in range(3)]
+        self.runner.submit(dict(base_url="http://localhost", openai_key="dummy"), tasks, True)
+        self.assertTrue(started.wait(5))
+        self.runner.cancel()
+        result = self.done()
+        self.assertEqual(self.runner._browser_use.await_count, 1)
+        self.assertEqual(len(result.task_results), 3)
+        self.assertIn("Not run", result.task_results[1].error_details)
 
     def test_missing_provider_key_never_falls_back_to_other_provider(self):
         with patch.dict("os.environ", {"OPENAI_API_KEY": "", "SKYVERN_API_KEY": ""}):
@@ -88,7 +160,7 @@ class RunnerLifecycle(unittest.TestCase):
             ):
                 with self.subTest(engine=engine):
                     self.runner.submit({"base_url": "http://localhost", "engine": engine,
-                                        other_key: "other-provider-secret"}, "/", "Click", [], True)
+                                        other_key: "other-provider-secret"}, regression(), True)
                     result = self.done()
                     self.assertEqual(result.status, "FAILED")
                     self.assertIn(f"{provider} API key is missing", result.error_details)
@@ -103,7 +175,7 @@ class RunnerLifecycle(unittest.TestCase):
             ):
                 settings = {"base_url": "https://example.test", "engine": "skyvern",
                             "skyvern_key": saved_key, "openai_key": "saved-openai-key"}
-                self.runner.submit(settings, "/", "Click", [], True)
+                self.runner.submit(settings, regression(), True)
                 self.assertEqual(self.done().status, "PASSED")
                 self.assertEqual(self.runner._skyvern.call_args.args[1], saved_key or "env-skyvern-key")
         self.runner._browser.assert_not_called()
@@ -123,9 +195,9 @@ class RunnerLifecycle(unittest.TestCase):
         self.runner._browser = browser
         self.runner._browser_use = engine
         settings = {"base_url": "http://localhost", "openai_key": "dummy"}
-        self.runner.submit(settings, "/", "Click", [], True)
+        self.runner.submit(settings, regression(), True)
         self.assertTrue(started.wait(5))
-        self.assertFalse(self.runner.submit(settings, "/", "Click", [], True))
+        self.assertFalse(self.runner.submit(settings, regression(), True))
         self.runner.cancel()
         self.assertEqual(self.done().status, "FAILED")
         self.assertTrue(cleaned.is_set())
@@ -150,13 +222,71 @@ class RunnerLifecycle(unittest.TestCase):
                 cancelled.set()
         self.runner._browser = browser
         self.runner._browser_use = engine
-        self.runner.submit({"base_url": "http://localhost", "openai_key": "dummy"}, "/", "Click", [], True)
+        self.runner.submit({"base_url": "http://localhost", "openai_key": "dummy"}, regression(), True)
         result = self.done()
         self.assertEqual((result.status, result.stopped_at_step, result.error_details), ("FAILED", 2, "HTTP 500"))
         self.assertTrue(cancelled.is_set())
 
+    def test_only_enabled_regression_tasks_run_without_a_synthetic_current_fix(self):
+        self.runner._skyvern = AsyncMock(return_value=report())
+        tasks = [RegressionTask(name="Selected", steps="Click Save"),
+                 RegressionTask(name="Disabled", steps="EXCLUDED", enabled=False)]
+        self.runner.submit(dict(base_url="https://example.test", engine="skyvern", skyvern_key="dummy",
+                                test_current_fix=True, fix_text="REMOVED_FIX"), tasks, True)
+        result = self.done()
+        self.assertEqual([task.task_name for task in result.task_results], ["Selected"])
+        prompt = self.runner._skyvern.call_args.args[3]
+        self.assertNotIn("REMOVED_FIX", prompt)
+        self.assertNotIn("EXCLUDED", prompt)
+        self.assertNotIn("Current fix", prompt)
+
+    def test_empty_task_selection_does_not_launch_an_engine(self):
+        self.runner._skyvern = AsyncMock()
+        self.runner.submit(dict(base_url="https://example.test", engine="skyvern"), [], True)
+        self.assertIn("Select at least one regression task", self.done().error_details)
+        self.runner._skyvern.assert_not_awaited()
+
 
 class GitAndUIState(unittest.TestCase):
+    def test_history_deletion_removes_waiting_runs_and_protects_active_run(self):
+        from fix_checker.page_home import HomePageMixin
+        active, finished, pending = RunRecord(status="running"), RunRecord(status="passed"), RunRecord()
+        app = SimpleNamespace(active_run=active, current=finished, history=[active, finished, pending],
+            pending_runs=[pending], _history_selected={active.id, finished.id, pending.id},
+            save_state=Mock(), refresh_history=Mock(), _show_result=Mock())
+        HomePageMixin.delete_selected_history(app)
+        self.assertEqual(app.history, [active])
+        self.assertEqual(app.pending_runs, [])
+        self.assertIs(app.current, active)
+        app.save_state.assert_called_once_with()
+        app.refresh_history.assert_called_once_with()
+
+    def test_deleted_history_is_removed_from_saved_state(self):
+        from fix_checker.app import DeveloperAppUI
+        from fix_checker.page_home import HomePageMixin
+        keep, remove = RunRecord(status="passed"), RunRecord(status="failed")
+        app = SimpleNamespace(active_run=None, current=None, settings={}, tasks=[], history=[keep, remove],
+            pending_runs=[], _history_selected={remove.id}, refresh_history=Mock())
+        app.save_state = lambda: DeveloperAppUI.save_state(app)
+        with tempfile.TemporaryDirectory() as folder, \
+             patch("fix_checker.app.SETTINGS_FILE", Path(folder) / "settings.json"), \
+             patch("fix_checker.app.TASKS_FILE", Path(folder) / "tasks.json"), \
+             patch("fix_checker.app.HISTORY_FILE", Path(folder) / "history.json"):
+            HomePageMixin.delete_selected_history(app)
+            restored = DeveloperAppUI._load_history(app)
+        self.assertEqual([record.id for record in restored], [keep.id])
+
+    def test_regression_task_order_and_waiting_run_order(self):
+        from fix_checker.page_tasks_settings import TasksSettingsMixin
+        from fix_checker.app import DeveloperAppUI
+        tasks = [RegressionTask(name=name) for name in ("A", "B", "C")]
+        app = SimpleNamespace(active_run=None, tasks=tasks, save_state=Mock(), refresh_tasks=Mock(),
+                              refresh_run=Mock(), refresh_home=Mock(), pending_runs=[RunRecord(title=name) for name in ("A", "B", "C")])
+        TasksSettingsMixin.move_regression_task(app, tasks[2].id, -1)
+        self.assertEqual([task.name for task in app.tasks], ["A", "C", "B"])
+        app.save_state.assert_called_once_with()
+        DeveloperAppUI.move_pending_run(app, app.pending_runs[2].id, -1)
+        self.assertEqual([run.title for run in app.pending_runs], ["A", "C", "B"])
     def test_history_refreshes_every_minute_until_closed(self):
         from fix_checker.app import DeveloperAppUI
         app = SimpleNamespace(_closing=False, refresh_history=Mock(), after=Mock(),

@@ -10,7 +10,7 @@ import customtkinter as ctk
 from fix_checker.agent_runner import BrowserAgentRunner
 from fix_checker.app import DeveloperAppUI
 from fix_checker.models import RegressionTask, RunRecord
-from fix_checker.models import TestReport
+from fix_checker.models import SuiteReport, TaskResult, TestReport
 
 
 class Site(BaseHTTPRequestHandler):
@@ -41,17 +41,24 @@ def desktop():
                 app.show_page(page)
                 app.update_idletasks()
             assert app.set_key_label.cget("text") == "Skyvern API key"
+            assert app.ai_model.cget("text") == "Skyvern"
             assert app.set_model.cget("state") == "disabled"
             app.set_key.insert(0, "skyvern-draft")
             app.set_engine.set("browser-use")
             app._change_engine("browser-use")
             assert app.set_key_label.cget("text") == "OpenAI API key"
+            assert app.ai_model.cget("text") == "browser-use"
+            assert app.settings["engine"] == "browser-use"
+            assert "other bugs in the app" in app.set_engine_note.cget("text")
             assert app.set_key.get() == ""
             assert app.set_model.cget("state") == "normal"
             app.set_key.insert(0, "openai-draft")
             app.set_engine.set("skyvern")
             app._change_engine("skyvern")
             assert app.set_key.get() == "skyvern-draft"
+            assert app.ai_model.cget("text") == "Skyvern"
+            assert app.settings["engine"] == "skyvern"
+            assert "if the requested flow works, it passes" in app.set_engine_note.cget("text")
             app.save_settings()
             assert app.settings["skyvern_key"] == "skyvern-draft"
             assert app.settings["openai_key"] == "openai-draft"
@@ -67,8 +74,26 @@ def desktop():
                     yield from descendants(child)
 
             assert not hasattr(app, "run_path")
+            assert not hasattr(app, "run_fix") and not hasattr(app, "current_fix")
             assert "Target path" not in [w.cget("text") for w in descendants(app.pages["Run Agent"])
                                           if isinstance(w, ctk.CTkLabel)]
+            assert "Fix + trajectory" not in [w.cget("text") for w in descendants(app.pages["Run Agent"])
+                                               if isinstance(w, ctk.CTkLabel)]
+            assert all("Current fix" not in w.cget("text") for w in descendants(app.run_checks)
+                       if isinstance(w, ctk.CTkCheckBox))
+            saved_tasks = app.tasks
+            app.tasks = []
+            with patch.object(app.runner, "submit", return_value=True) as submit:
+                app.launch_agent()
+                submit.assert_not_called()
+                queued = RunRecord(title="No selected tasks", tag="commit")
+                app.history.insert(0, queued)
+                app.launch_agent(queued)
+                assert submit.call_args.args[1] == []
+                app._finish_run(BrowserAgentRunner._failure("Select at least one regression task."))
+                assert queued.status == "failed"
+            app.history.clear()
+            app.tasks = saved_tasks
             app.history.append(RunRecord(title="Refresh fixture", started=time.time(), status="passed"))
             app.refresh_history()
             fixture = app.history[-1]
@@ -95,7 +120,6 @@ def desktop():
             assert app.set_repo.get() == "unsaved repository draft"
             print("PASS: minute refresh updates sidebar and home ages without clearing drafts or filters")
 
-            app.run_fix.insert("1.0", "Click Save")
             app.settings["base_url"] = "http://localhost:3000/app/checks?mode=test"
             for engine in ("skyvern", "browser-use"):
                 app.settings["engine"] = engine
@@ -106,7 +130,7 @@ def desktop():
                     with patch.object(app.runner, "submit", return_value=True) as submit:
                         app.launch_agent()
                     assert submit.call_args.kwargs["headless"] == (not show)
-                    assert submit.call_args.args[1] is None
+                    assert submit.call_args.args[1] == [task for task in app.tasks if task.enabled]
                     assert app.active_run.path == app.settings["base_url"]
                     assert app.settings["show_browser"] == show
                     assert app.run_headless.cget("state") == "disabled"
@@ -132,6 +156,68 @@ def desktop():
                 if child.winfo_toplevel() == child:
                     child.destroy()
             print("PASS: all desktop pages and regression task editor opened")
+
+            # Bulk deletion updates the same history used by the sidebar and pending runs.
+            app.home_search.delete(0, "end")
+            active = RunRecord(title="Keep active", status="running")
+            old = RunRecord(title="Delete this history", status="failed")
+            waiting = RunRecord(title="Delete waiting run")
+            app.history = [active, old, waiting]
+            app.pending_runs = [waiting]
+            app.active_run = active
+            app.current = old
+            app.refresh_history()
+            app.select_all_history()
+            assert app._history_selected == {old.id, waiting.id}
+            assert app._home_rows[active.id]["checkbox"].cget("state") == "disabled"
+            app.delete_selected_history()
+            assert app.history == [active] and app.pending_runs == []
+            sidebar_text = [w.cget("text") for w in descendants(app.hist_list) if isinstance(w, ctk.CTkLabel)]
+            assert "Delete this history" not in sidebar_text and "Delete waiting run" not in sidebar_text
+            assert "Keep active" in sidebar_text
+            app.active_run = None
+            app.refresh_home()
+            app.select_all_history()
+            app.delete_selected_history()
+            assert app.history == [] and app._home_rows == {} and app.current is None
+            print("PASS: select-all deletion clears Home and sidebar, removes queued runs, protects active run")
+
+            app.tasks = [RegressionTask(name=f"Task {i}", steps="Click Save") for i in range(2)]
+            app.show_page("Run Agent")
+            app.deiconify()
+            app.update()
+            sizes = (app.run_checks._parent_canvas.winfo_height(), app.run_log.winfo_height())
+            app.tasks.extend(RegressionTask(name=f"Task {i}", steps="Click Save") for i in range(2, 40))
+            app.refresh_run()
+            app.update()
+            assert (app.run_checks._parent_canvas.winfo_height(), app.run_log.winfo_height()) == sizes
+            assert app.run_checks._parent_canvas.yview()[1] < 1
+            app.run_checks._parent_canvas.yview_moveto(1)
+            assert app.run_checks._parent_canvas.yview()[0] > 0
+            app.geometry("1280x950")
+            app.update()
+            assert app.run_checks._parent_canvas.winfo_height() > sizes[0]
+            assert app.run_log.winfo_height() > sizes[1]
+            app.geometry("1080x700")
+            app.update()
+            assert app.run_checks._parent_canvas.winfo_height() >= 150
+            assert app.run_log.winfo_height() >= 140
+            print("PASS: regression tasks and live log fill the available space and remain scrollable with 40 tasks")
+
+            app.tasks = app.tasks[:2]
+            app.refresh_run()
+            result = SuiteReport(status="FAILED", stopped_at_step=1, stopped_url="http://localhost",
+                failed_test_name="First", error_details="1/2 passed; 1 failed.", task_results=[
+                    TaskResult(status="FAILED", stopped_at_step=1, stopped_url="http://localhost",
+                        failed_test_name="First", error_details="Missing button", task_id="first", task_name="First"),
+                    TaskResult(status="PASSED", stopped_at_step=2, stopped_url="http://localhost",
+                        failed_test_name="", error_details="", task_id="second", task_name="Second")])
+            record = RunRecord(status="failed", report=result.model_dump())
+            app._show_result(record)
+            assert len(app._verdict_rows) == 2
+            verdict_text = [w.cget("text") for w in descendants(app.task_verdicts) if isinstance(w, ctk.CTkLabel)]
+            assert "PASSED" in verdict_text and "FAILED" in verdict_text and "Missing button" in verdict_text
+            print("PASS: each task has a separate verdict in the result panel")
         finally:
             app._on_close()
             app.runner.thread.join(timeout=10)
@@ -198,6 +284,42 @@ async def browser():
             assert not errors, errors
         print("PASS: Chromium click, browser-use attach, HTTP 500 and console diagnostics")
         print("PASS: full browser-use agent with simulated LLM, real actions and structured report")
+
+        async def task_engine(settings, key, prompt, address):
+            async with async_playwright() as pw:
+                remote = await pw.chromium.connect_over_cdp(address)
+                try:
+                    page = await remote.contexts[0].new_page()
+                    if settings["task_name"] == "Broken page":
+                        await page.goto(url + "/broken")
+                        await asyncio.sleep(60)  # HTTP diagnostics must stop this task.
+                    else:
+                        await page.goto(url)
+                        await page.click("#save")
+                        assert await page.locator("#save").inner_text() == "Saved"
+                        if settings["task_name"] == "Working flow with console bug":
+                            await page.evaluate("console.error('Unrelated fixture bug')")
+                            await asyncio.sleep(60)  # A working flow still fails detailed diagnostics.
+                        return TestReport(status="PASSED", stopped_at_step=1, stopped_url=url,
+                                          failed_test_name="", error_details="")
+                finally:
+                    await remote.close()
+        runner._browser_use = task_engine
+        runner.submit(dict(base_url=url, openai_key="dummy"), [
+            RegressionTask(name="Broken page", steps="Open the broken page"),
+            RegressionTask(name="Working flow with console bug", steps="Click Save and verify Saved"),
+            RegressionTask(name="Working page", steps="Click Save and verify Saved"),
+        ], True)
+        await asyncio.wait_for(asyncio.wrap_future(runner._job), timeout=30)
+        events = []
+        while not runner.steps.empty():
+            events.append(runner.steps.get_nowait())
+        suite = next(event["report"] for event in events if event["kind"] == "done")
+        assert [result.status for result in suite.task_results] == ["FAILED", "FAILED", "PASSED"]
+        assert "HTTP 500" in suite.task_results[0].error_details
+        assert "Unrelated fixture bug" in suite.task_results[1].error_details
+        print("PASS: real HTTP 500 fails the first task, then the next task clicks Save and passes")
+        print("PASS: a working Save flow still fails browser-use checks when another console bug is observed")
     finally:
         server.shutdown()
         server.server_close()

@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
-from .models import TestReport
+from .models import SuiteReport, TaskResult, TestReport
 
 
 def target_url(base: str, path: str | None = None) -> str:
@@ -43,6 +43,9 @@ class BrowserAgentRunner:
         self._task = None
         self._step_number = 0
         self._secrets = []
+        self._pending_cases = []
+        self._current_case = None
+        self._case_results = []
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
 
@@ -78,33 +81,62 @@ class BrowserAgentRunner:
         if self._task is not None:
             self._task.cancel()
 
+    def move_pending_task(self, task_id, direction):
+        if self.busy and direction in (-1, 1):
+            self.loop.call_soon_threadsafe(self._move_pending_task, task_id, direction)
+
+    def _move_pending_task(self, task_id, direction):
+        index = next((i for i, case in enumerate(self._pending_cases) if case["id"] == task_id), -1)
+        destination = index + direction
+        if index >= 0 and 0 <= destination < len(self._pending_cases):
+            self._pending_cases[index], self._pending_cases[destination] = (
+                self._pending_cases[destination], self._pending_cases[index])
+            self._publish_queue()
+
+    def _publish_queue(self):
+        cases = [{"id": result.task_id, "name": result.task_name, "status": result.status.lower()}
+                 for result in self._case_results]
+        if self._current_case:
+            cases.append({**self._current_case, "status": "running"})
+        cases.extend({**case, "status": "queued"} for case in self._pending_cases)
+        self.steps.put({"kind": "task_queue", "tasks": [
+            {key: case[key] for key in ("id", "name", "status")} for case in cases]})
+
     @property
     def busy(self) -> bool:
         return self._job is not None and not self._job.done()
 
-    def submit(self, settings, path, fix_text, tasks, headless) -> bool:
+    def submit(self, settings, tasks, headless) -> bool:
         if self.busy or self._closed:
             return False
         self._job = asyncio.run_coroutine_threadsafe(
-            self._run(dict(settings), path, fix_text, copy.deepcopy(tasks), headless), self.loop
+            self._run(dict(settings), copy.deepcopy(tasks), headless), self.loop
         )
         return True
 
     @staticmethod
-    def build_prompt(settings, path, fix_text, tasks) -> str:
+    def build_prompt(settings, steps) -> str:
         base = settings.get("base_url") or "http://localhost:3000"
-        lines = [f"Target page: {target_url(base, path)}", "Tests to execute in order:"]
-        if settings.get("test_current_fix", True):
-            lines.append(f"Current fix: {fix_text.strip()}")
-        for task in tasks:
-            if task.enabled:
-                lines.append(f"{task.name}: {task.steps}")
+        lines = [f"Target page: {target_url(base)}",
+                 f"Regression task: {settings.get('task_name', 'Selected task')}", steps.strip()]
+        if settings.get("engine") == "skyvern":
+            lines += [
+                "Use a broad functional check of the requested flow and its expected outcome.",
+                "If the requested flow works, return PASSED. Do not fail the task for unrelated console errors,",
+                "warnings, failed background requests or cosmetic issues that do not block the expected outcome.",
+                "Return FAILED when the requested flow is blocked or its expected outcome is not met.",
+            ]
+        else:
+            lines += [
+                "Use detailed checks: verify expected outcomes, missing elements, page errors, console errors and HTTP 404/500.",
+                "Report other observed bugs in the app even if the requested flow works.",
+                "An observed page error, console error, HTTP 404 or HTTP 5xx makes this task FAILED, even if its functional outcome succeeds.",
+            ]
         lines += [
-            "Act as a real user. Execute every selected test; never invent credentials or evidence.",
-            "Verify expected outcomes, missing elements, page errors, console errors and HTTP 404/500.",
-            "Stop at the FIRST failure. Do not repair the site or bypass a failing assertion.",
+            "Act as a real user. Execute this test; never invent credentials or evidence.",
+            "If this test fails, return FAILED with evidence. Do not repair the site or bypass assertions.",
             "If prerequisites or credentials are missing, report FAILED and explain what is missing.",
-            "Return PASSED only when ALL selected tests were executed and their outcomes verified.",
+            "Return PASSED only when this test was executed and its expected outcome verified under the selected check policy.",
             "Return ONLY JSON matching the report schema: status (PASSED/FAILED), stopped_at_step",
             "(integer), stopped_url, failed_test_name and error_details. Identify the exact failing",
             "step, URL and element; on success use empty failure fields.",
@@ -116,8 +148,54 @@ class BrowserAgentRunner:
             text = text.replace(secret, "[redacted]")
         self.steps.put({"kind": "log", "text": text})
 
-    async def _run(self, settings, path, fix_text, tasks, headless):
+    async def _run(self, settings, tasks, headless):
         self._task = asyncio.current_task()
+        self._case_results = []
+        self._current_case = None
+        self._pending_cases = []
+        self._pending_cases.extend(dict(id=task.id, name=task.name, steps=task.steps)
+                                   for task in tasks if task.enabled)
+        total = len(self._pending_cases)
+        if not total:
+            self.steps.put({"kind": "done", "report": self._failure("Select at least one regression task.")})
+            return
+        while self._pending_cases:
+            self._current_case = self._pending_cases.pop(0)
+            self._publish_queue()
+            case = self._current_case
+            self._log(f"Running task {len(self._case_results) + 1}/{total}: {case['name']}")
+            cancelled = False
+            try:
+                case_settings = {**settings, "task_name": case["name"]}
+                report = await self._execute_case(case_settings, case["steps"], headless)
+            except asyncio.CancelledError:
+                cancelled = True
+                report = self._failure("Run cancelled by user.")
+            result = TaskResult(**report.model_dump(), task_id=case["id"], task_name=case["name"])
+            self._case_results.append(result)
+            self.steps.put({"kind": "task_result", "result": result.model_dump(), "total": total})
+            self._log(f"{case['name']}: {result.status} {result.error_details}".strip())
+            self._current_case = None
+            if cancelled:
+                for pending in self._pending_cases:
+                    skipped = TaskResult(**self._failure("Not run: cancelled by user.").model_dump(),
+                                         task_id=pending["id"], task_name=pending["name"])
+                    self._case_results.append(skipped)
+                    self.steps.put({"kind": "task_result", "result": skipped.model_dump(), "total": total})
+                self._pending_cases.clear()
+            self._publish_queue()
+        failed = [result for result in self._case_results if result.status == "FAILED"]
+        first = failed[0] if failed else self._case_results[-1]
+        summary = SuiteReport(
+            status="FAILED" if failed else "PASSED", stopped_at_step=first.stopped_at_step,
+            stopped_url=first.stopped_url, failed_test_name=first.task_name if failed else "",
+            error_details=(first.error_details if total == 1 else
+                           f"{total - len(failed)}/{total} passed; {len(failed)} failed."),
+            task_results=self._case_results,
+        )
+        self.steps.put({"kind": "done", "report": summary})
+
+    async def _execute_case(self, settings, steps, headless):
         report = None
         url = ""
         diagnostics = []
@@ -126,7 +204,7 @@ class BrowserAgentRunner:
             os.getenv("OPENAI_API_KEY"), os.getenv("SKYVERN_API_KEY"),
         ) if value]
         try:
-            url = target_url(settings.get("base_url", ""), path)
+            url = target_url(settings.get("base_url", ""))
             skyvern = settings.get("engine") == "skyvern"
             key_name, env_name, provider = (
                 ("skyvern_key", "SKYVERN_API_KEY", "Skyvern") if skyvern else
@@ -136,11 +214,9 @@ class BrowserAgentRunner:
             if not key:
                 raise ValueError(f"{provider} API key is missing. Set it in Settings or {env_name}.")
             self._step_number = 0
-            if settings.get("test_current_fix", True) and not fix_text.strip():
-                raise ValueError("Describe the current fix trajectory, or deselect Current fix.")
-            if not settings.get("test_current_fix", True) and not any(t.enabled for t in tasks):
-                raise ValueError("Select at least one test.")
-            prompt = self.build_prompt(settings, path, fix_text, tasks)
+            if not steps.strip():
+                raise ValueError("Add steps and an expected result for this regression task.")
+            prompt = self.build_prompt(settings, steps)
             self._log(f"Starting {settings.get('engine', 'browser-use')} at {url}")
             async with asyncio.timeout(float(settings.get("timeout", 900))):
                 if skyvern:
@@ -169,15 +245,14 @@ class BrowserAgentRunner:
                             failure.cancel()
                             await asyncio.gather(work, failure, return_exceptions=True)
         except asyncio.CancelledError:
-            report = self._failure("Run cancelled.", url)
+            raise
         except Exception as exc:
             text = f"{type(exc).__name__}: {exc}"
             for secret in self._secrets:
                 text = text.replace(secret, "[redacted]")
             self.steps.put({"kind": "error", "text": text})
             report = self._failure(text, url)
-        finally:
-            self.steps.put({"kind": "done", "report": report or self._failure("No report returned.", url)})
+        return report or self._failure("No report returned.", url)
 
     @staticmethod
     def _failure(text, url=""):

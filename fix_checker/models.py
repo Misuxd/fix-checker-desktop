@@ -33,6 +33,15 @@ class TestReport(BaseModel):
         return value.upper() if isinstance(value, str) else value
 
 
+class TaskResult(TestReport):
+    task_id: str
+    task_name: str
+
+
+class SuiteReport(TestReport):
+    task_results: list[TaskResult] = Field(default_factory=list)
+
+
 @dataclass
 class RegressionTask:
     """A saved flow the agent replays on every run."""
