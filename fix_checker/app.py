@@ -4,6 +4,7 @@ from __future__ import annotations
 import queue
 import os
 import time
+import webbrowser
 from dataclasses import asdict
 from typing import Optional
 
@@ -55,6 +56,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         if self.settings.get("repo_path"):
             self.monitor.start(self.settings["repo_path"])
         self.after(200, self._pump)
+        self.after(60_000, self._refresh_periodic)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # -- stored state ------------------------------------------------------
@@ -89,8 +91,8 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         if isinstance(data, list):
             for row in data:
                 try:
-                    tasks.append(RegressionTask(**row))
-                except TypeError:
+                    tasks.append(RegressionTask(**{key: value for key, value in row.items() if key != "path"}))
+                except (AttributeError, TypeError):
                     continue
         return tasks if isinstance(data, list) else [RegressionTask(**asdict(t)) for t in DEFAULT_TASKS]
 
@@ -201,6 +203,12 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
             method()
 
     # -- events ------------------------------------------------------------
+    def _refresh_periodic(self) -> None:
+        if getattr(self, "_closing", False):
+            return
+        self.refresh_history()
+        self.after(60_000, self._refresh_periodic)
+
     def _pump(self) -> None:
         if getattr(self, "_closing", False):
             return
@@ -225,6 +233,14 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
             self._append_log(item.get("text", ""))
         elif kind == "error":
             self._append_log(f"ERROR: {item.get('text', '')}")
+        elif kind == "browser_view":
+            url = item.get("url", "")
+            self._append_log(f"Live browser: {url}")
+            try:
+                if not webbrowser.open_new_tab(url):
+                    self._append_log("Open the live browser URL above to watch the run.")
+            except Exception as exc:
+                self._append_log(f"Could not open live browser: {exc}. Open the URL above.")
         elif kind == "done":
             self._finish_run(item.get("report"))
 
@@ -284,6 +300,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         self.refresh_history()
         self._show_result(rec)
         self.active_run = None
+        self.refresh_run()
 
     def refresh_history(self) -> None:
         if not hasattr(self, "hist_list"):

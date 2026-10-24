@@ -45,13 +45,16 @@ install both in the same environment. `setup.ps1` keeps them separate.
 2. Enter the base URL of your running site and select a local Git repository.
    Skyvern Cloud needs a publicly reachable site URL. Use browser-use for
    localhost sites. Save settings.
-3. In Regression Tasks, add or edit each flow's name, starting path and precise
-   steps, including prerequisites, test credentials if needed and expected results.
+3. In Regression Tasks, add or edit each flow's name and precise steps, including
+   navigation, prerequisites, test credentials if needed and expected results.
 4. In Run Agent, enter a starting path or a full HTTP(S) URL, describe the fix
    trajectory, and select the current fix and/or saved regressions.
-5. With browser-use, enable Show browser live to watch Chromium. Launch the agent
-   or use Test latest commit. Cancel stops the active run, including requesting
-   cancellation of an active Skyvern Cloud run.
+5. Enable Show browser live before launching to watch the run. With browser-use,
+   this opens a local Chromium window; with Skyvern, it opens the cloud session's
+   live viewer in your default browser (sign in to Skyvern if prompted). With the
+   switch off, runs still produce step logs without opening a browser window or
+   viewer. The switch is locked during a run. Launch the agent or use Test latest
+   commit. Cancel also requests cancellation of an active Skyvern Cloud run.
 
 The monitor polls local HEAD every three seconds; it does not poll GitHub's API.
 New commits queue while a test is running. The selected repo can be changed or
@@ -65,7 +68,8 @@ Skyvern manages the browser and model; the OpenAI model setting applies only to
 browser-use. Skyvern runs in a separate process and streams status logs to the
 application's background asyncio worker. Cloud browsers cannot reach your
 machine's localhost; provide a public deployment or a URL exposed through a
-tunnel. The local Show browser live switch applies only to browser-use.
+tunnel. When live viewing is enabled, a dedicated Skyvern browser session is
+created for the run and closed when the run finishes or is cancelled.
 browser-use operates on an isolated local Chromium profile, including for
 localhost sites, and uses its native ChatOpenAI adapter with the OpenAI key.
 
@@ -94,6 +98,9 @@ must report failure rather than inventing an account. AI-driven checks still
 require review of the recorded evidence and clear expected outcomes.
 
 Home supports search, status/source filters and viewing historical reports.
+History and Home refresh every 60 seconds, including relative timestamps, and
+update immediately when a run starts or finishes or a commit arrives. This
+refresh preserves form drafts and search/filter selections.
 New manual runs never overwrite earlier results. Incoming commits cannot take
 ownership of an already-running test's result.
 

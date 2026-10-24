@@ -38,7 +38,7 @@ class ReportsAndPaths(unittest.TestCase):
                 target_url(base, path)
         text = BrowserAgentRunner.build_prompt(
             {"base_url": "https://site.test", "test_current_fix": False}, "/", "EXCLUDED_FIX",
-            [RegressionTask(name="SELECTED", path="/x", steps="Click"),
+            [RegressionTask(name="SELECTED", steps="Open /x and click"),
              RegressionTask(name="EXCLUDED_TASK", enabled=False)])
         self.assertIn("SELECTED", text)
         self.assertNotIn("EXCLUDED", text)
@@ -153,6 +153,38 @@ class RunnerLifecycle(unittest.TestCase):
 
 
 class GitAndUIState(unittest.TestCase):
+    def test_history_refreshes_every_minute_until_closed(self):
+        from fix_checker.app import DeveloperAppUI
+        app = SimpleNamespace(_closing=False, refresh_history=Mock(), after=Mock(),
+                              _refresh_periodic=Mock())
+        DeveloperAppUI._refresh_periodic(app)
+        app.refresh_history.assert_called_once_with()
+        app.after.assert_called_once_with(60_000, app._refresh_periodic)
+        app._closing = True
+        DeveloperAppUI._refresh_periodic(app)
+        self.assertEqual(app.after.call_count, 1)
+        self.assertEqual(app.refresh_history.call_count, 1)
+
+    def test_legacy_regression_tasks_load_without_path(self):
+        from fix_checker.app import DeveloperAppUI
+        saved = {"id": "old-task", "name": "Sign in", "path": "/login",
+                 "steps": "Open /login and sign in", "enabled": True}
+        with patch("fix_checker.app.load_json", return_value=[saved]):
+            tasks = DeveloperAppUI._load_tasks(Mock())
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].name, "Sign in")
+        self.assertEqual(tasks[0].steps, saved["steps"])
+        self.assertFalse(hasattr(tasks[0], "path"))
+
+    def test_skyvern_live_event_opens_viewer(self):
+        from fix_checker.app import DeveloperAppUI
+        app = SimpleNamespace(_append_log=Mock())
+        url = "https://app.skyvern.com/browser-session/pbs_test"
+        with patch("fix_checker.app.webbrowser.open_new_tab", return_value=True) as open_tab:
+            DeveloperAppUI._handle_step(app, {"kind": "browser_view", "url": url})
+        open_tab.assert_called_once_with(url)
+        app._append_log.assert_called_once_with(f"Live browser: {url}")
+
     def test_git_monitor_restart_and_new_commit(self):
         import git
         from fix_checker.git_monitor import GitMonitor
@@ -197,6 +229,40 @@ class GitAndUIState(unittest.TestCase):
 
 
 class SkyvernContract(unittest.IsolatedAsyncioTestCase):
+    async def test_live_view_only_creates_session_when_enabled_and_always_closes_it(self):
+        from fix_checker.skyvern_worker import run
+        for show_browser, cancel in ((False, False), (True, False), (True, True)):
+            with self.subTest(show_browser=show_browser, cancel=cancel):
+                viewer_url = "https://app.skyvern.com/browser-session/pbs_test"
+                client = SimpleNamespace(
+                    create_browser_session=AsyncMock(return_value=SimpleNamespace(
+                        browser_session_id="pbs_test", app_url=viewer_url)),
+                    close_browser_session=AsyncMock(),
+                    run_task=AsyncMock(return_value=SimpleNamespace(run_id="tsk_test")),
+                    get_run=AsyncMock(return_value=SimpleNamespace(status="completed", step_count=1,
+                        output=report().model_dump()), side_effect=asyncio.CancelledError if cancel else None),
+                    cancel_run=AsyncMock(), aclose=AsyncMock())
+                modules = {"skyvern": SimpleNamespace(Skyvern=Mock(return_value=client),
+                    RunStatus=lambda _: SimpleNamespace(is_final=lambda: True))}
+                events = []
+                with patch.dict("sys.modules", modules):
+                    payload = dict(key="dummy", url="https://example.test", prompt="Click",
+                                   show_browser=show_browser)
+                    if cancel:
+                        with self.assertRaises(asyncio.CancelledError):
+                            await run(payload, events.append)
+                    else:
+                        self.assertEqual((await run(payload, events.append)).status, "PASSED")
+                if show_browser:
+                    self.assertIn({"kind": "browser_view", "url": viewer_url}, events)
+                    self.assertEqual(client.run_task.call_args.kwargs["browser_session_id"], "pbs_test")
+                    client.close_browser_session.assert_awaited_once_with("pbs_test")
+                else:
+                    client.create_browser_session.assert_not_awaited()
+                    client.close_browser_session.assert_not_awaited()
+                    self.assertFalse(any(event["kind"] == "browser_view" for event in events))
+                client.aclose.assert_awaited_once()
+
     async def test_worker_pipe_completion_and_cancellation(self):
         script = """
 import asyncio

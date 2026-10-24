@@ -39,7 +39,6 @@ class RegressionTask:
 
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     name: str = ""
-    path: str = "/"
     steps: str = ""
     enabled: bool = True
 
@@ -93,17 +92,14 @@ def time_ago(ts: float) -> str:
 DEFAULT_TASKS = [
     RegressionTask(
         name="Sign in",
-        path="/login",
         steps="Open /login, enter the test account, submit, expect the dashboard to load.",
     ),
     RegressionTask(
         name="Add to cart",
-        path="/products",
         steps="Open /products, add the first item to the cart, expect the cart badge to show 1.",
     ),
     RegressionTask(
         name="Checkout",
-        path="/checkout",
         steps="Open /checkout with one item in the cart, expect the order summary to appear.",
     ),
 ]

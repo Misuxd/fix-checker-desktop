@@ -95,7 +95,7 @@ class BrowserAgentRunner:
             lines.append(f"Current fix: {fix_text.strip()}")
         for task in tasks:
             if task.enabled:
-                lines.append(f"{task.name} ({target_url(base, task.path)}): {task.steps}")
+                lines.append(f"{task.name}: {task.steps}")
         lines += [
             "Act as a real user. Execute every selected test; never invent credentials or evidence.",
             "Verify expected outcomes, missing elements, page errors, console errors and HTTP 404/500.",
@@ -141,6 +141,7 @@ class BrowserAgentRunner:
             self._log(f"Starting {settings.get('engine', 'browser-use')} at {url}")
             async with asyncio.timeout(float(settings.get("timeout", 900))):
                 if skyvern:
+                    settings["show_browser"] = not headless
                     report = await self._skyvern(settings, key, url, prompt)
                 else:
                     error_event = asyncio.Event()
@@ -251,7 +252,8 @@ class BrowserAgentRunner:
         )
         report = None
         try:
-            payload = dict(key=key, url=url, prompt=prompt)
+            payload = dict(key=key, url=url, prompt=prompt,
+                           show_browser=bool(settings.get("show_browser")))
             process.stdin.write((json.dumps(payload) + "\n").encode())
             await process.stdin.drain()
             while line := await process.stdout.readline():
@@ -260,6 +262,8 @@ class BrowserAgentRunner:
                     event = json.loads(text[len("FIX_CHECKER_EVENT "):])
                     if event["kind"] == "done":
                         report = self._extract_report(event["report"])
+                    elif event["kind"] == "browser_view":
+                        self.steps.put(event)
                     else:
                         if "step" in event:
                             self._step_number = event["step"] or 0

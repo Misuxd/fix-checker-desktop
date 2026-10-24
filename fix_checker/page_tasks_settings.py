@@ -46,9 +46,6 @@ class TasksSettingsMixin:
             ghost_btn(top, "Delete", lambda t=task: self.delete_task(t)).pack(side="right")
             ghost_btn(top, "Edit", lambda t=task: self.edit_task(t)).pack(side="right", padx=6)
 
-            label(row, f"path: {task.path}", size=11, color=C["muted"]).pack(
-                anchor="w", padx=14
-            )
             label(
                 row,
                 task.steps or "—",
@@ -64,29 +61,21 @@ class TasksSettingsMixin:
     def edit_task(self, task=None) -> None:
         dialog = ctk.CTkToplevel(self)
         dialog.title("Edit regression task" if task else "Add regression task")
-        dialog.geometry("600x450")
+        dialog.geometry("600x380")
         dialog.transient(self)
         name = self._field(dialog, "Task name")
-        path = self._field(dialog, "Start path or full URL")
         label(dialog, "Steps and expected result", size=12).pack(anchor="w", padx=14, pady=8)
         steps = ctk.CTkTextbox(dialog, height=150)
         steps.pack(fill="both", expand=True, padx=14)
         name.insert(0, task.name if task else "")
-        path.insert(0, task.path if task else "/")
         steps.insert("1.0", task.steps if task else "")
         def save():
             title, trajectory = name.get().strip(), steps.get("1.0", "end").strip()
             if not title or not trajectory:
                 messagebox.showerror("Incomplete task", "Enter a name, steps and expected result.", parent=dialog)
                 return
-            from .agent_runner import target_url
-            try:
-                target_url(self.settings["base_url"], path.get())
-            except ValueError as exc:
-                messagebox.showerror("Invalid URL", str(exc), parent=dialog)
-                return
             target = task or RegressionTask()
-            target.name, target.path, target.steps = title, path.get().strip() or "/", trajectory
+            target.name, target.steps = title, trajectory
             if task is None:
                 self.tasks.append(target)
             self.save_state()
@@ -221,3 +210,4 @@ class TasksSettingsMixin:
         self.ai_model.configure(text="Skyvern" if self.settings["engine"] == "skyvern" else self.settings["model"])
         self.settings_note.configure(text="Saved")
         self.monitor.start(self.settings["repo_path"])
+        self.refresh_run()

@@ -66,6 +66,7 @@ class RunPageMixin:
             font=(FONT, 12),
             text_color=C["text"],
             progress_color=C["accent"],
+            command=self._save_browser_visibility,
         )
         self.run_headless.pack(side="left")
         if self.settings.get("show_browser"):
@@ -74,6 +75,8 @@ class RunPageMixin:
         primary_btn(opts, "Launch agent in browser", lambda: self.launch_agent()).pack(
             side="right"
         )
+        self.browser_note = label(left, "", size=11, color=C["muted"], anchor="w")
+        self.browser_note.pack(fill="x", pady=(4, 0))
 
         log = card(left)
         log.pack(fill="both", expand=True, pady=(12, 0))
@@ -119,9 +122,13 @@ class RunPageMixin:
             return
         skyvern = self.settings.get("engine") == "skyvern"
         self.run_headless.configure(
-            text="Show browser live (browser-use)" if skyvern else "Show browser live",
-            state="disabled" if skyvern else "normal",
+            text="Show browser live",
+            state="disabled" if self.active_run is not None else "normal",
         )
+        self.browser_note.configure(text=(
+            "Opens Skyvern's live session in your default browser."
+            if skyvern else "Shows a separate browser window while the tests run."
+        ))
         for child in self.run_checks.winfo_children():
             child.destroy()
         ctk.CTkCheckBox(
@@ -132,7 +139,7 @@ class RunPageMixin:
             var = ctk.BooleanVar(value=task.enabled)
             ctk.CTkCheckBox(
                 self.run_checks,
-                text=f"{task.name}  ({task.path})",
+                text=task.name,
                 variable=var,
                 font=(FONT, 12),
                 text_color=C["text"],
@@ -191,6 +198,13 @@ class RunPageMixin:
             rec.status = "failed"
             self.active_run = None
             self.save_state()
+            self.refresh_history()
+            self._show_result(rec)
+            self.refresh_run()
+
+    def _save_browser_visibility(self) -> None:
+        self.settings["show_browser"] = bool(self.run_headless.get())
+        self.save_state()
 
     def _save_test_selection(self, task=None, enabled=None):
         if task is not None:

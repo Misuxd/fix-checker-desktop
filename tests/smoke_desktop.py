@@ -1,12 +1,15 @@
 """Real Tk and real Chromium smoke checks; no paid LLM calls."""
 import asyncio
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
+import customtkinter as ctk
+
 from fix_checker.agent_runner import BrowserAgentRunner
 from fix_checker.app import DeveloperAppUI
-from fix_checker.models import RegressionTask
+from fix_checker.models import RegressionTask, RunRecord
 from fix_checker.models import TestReport
 
 
@@ -55,10 +58,55 @@ def desktop():
             app.refresh_settings()
             assert app.set_key.get() == "skyvern-draft"
             app.show_page("Run Agent")
-            assert app.run_headless.cget("state") == "disabled"
+            assert app.run_headless.cget("state") == "normal"
             print("PASS: provider labels, separate key drafts, save/reload and model availability")
+
+            def descendants(widget):
+                for child in widget.winfo_children():
+                    yield child
+                    yield from descendants(child)
+
+            app.history.append(RunRecord(title="Refresh fixture", started=time.time(), status="passed"))
+            app.refresh_history()
+            app.home_search.insert(0, "Refresh fixture")
+            app.set_repo.insert(0, "unsaved repository draft")
+            with patch("fix_checker.models.time.time", return_value=time.time() + 61):
+                app._refresh_periodic()
+            assert "1m ago" in [w.cget("text") for w in descendants(app.hist_list) if isinstance(w, ctk.CTkLabel)]
+            assert "1m ago" in [w.cget("text") for w in descendants(app.home_list) if isinstance(w, ctk.CTkLabel)]
+            assert app.home_search.get() == "Refresh fixture"
+            assert app.set_repo.get() == "unsaved repository draft"
+            print("PASS: minute refresh updates sidebar and home ages without clearing drafts or filters")
+
+            app.run_fix.insert("1.0", "Click Save")
+            for engine in ("skyvern", "browser-use"):
+                app.settings["engine"] = engine
+                app.refresh_run()
+                for show in (False, True):
+                    app.run_headless.select() if show else app.run_headless.deselect()
+                    app._save_browser_visibility()
+                    with patch.object(app.runner, "submit", return_value=True) as submit:
+                        app.launch_agent()
+                    assert submit.call_args.kwargs["headless"] == (not show)
+                    assert app.settings["show_browser"] == show
+                    assert app.run_headless.cget("state") == "disabled"
+                    app._finish_run(TestReport(status="PASSED", stopped_at_step=1,
+                        stopped_url="http://localhost", failed_test_name="", error_details=""))
+                    assert app.run_headless.cget("state") == "normal"
+            print("PASS: live switch controls the next run for both engines and is locked during a run")
+
             app.add_task()
             app.update()
+            dialog = next(w for w in app.winfo_children() if isinstance(w, ctk.CTkToplevel))
+            fields = [w for w in descendants(dialog) if isinstance(w, ctk.CTkEntry)]
+            assert len(fields) == 1, "Task dialog must only have the name entry"
+            fields[0].insert(0, "New regression")
+            steps = next(w for w in descendants(dialog) if isinstance(w, ctk.CTkTextbox))
+            steps.insert("1.0", "Open the products page and click Save")
+            save = next(w for w in descendants(dialog) if isinstance(w, ctk.CTkButton) and w.cget("text") == "Save task")
+            save.invoke()
+            assert app.tasks[-1].name == "New regression"
+            assert not hasattr(app.tasks[-1], "path")
             for child in app.winfo_children():
                 if child.winfo_toplevel() == child:
                     child.destroy()
@@ -78,6 +126,15 @@ async def browser():
     runner = BrowserAgentRunner()
     errors = []
     try:
+        for headless in (True, False):
+            async with runner._browser(headless, []) as address:
+                async with async_playwright() as pw:
+                    remote = await pw.chromium.connect_over_cdp(address)
+                    session = await remote.new_browser_cdp_session()
+                    version = await session.send("Browser.getVersion")
+                    assert ("HeadlessChrome" in version["userAgent"]) == headless
+                    await remote.close()
+        print("PASS: real Chromium launches visibly with live mode on and headless with it off")
         async with runner._browser(True, errors) as address:
             # Verify the engine can attach to the very same local browser.
             session = Browser(cdp_url=address)

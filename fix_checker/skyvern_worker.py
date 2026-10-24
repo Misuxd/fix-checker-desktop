@@ -18,12 +18,21 @@ async def run(payload, send=emit):
     from skyvern import Skyvern, RunStatus
     client = Skyvern(api_key=payload["key"])
     run_id = None
+    session_id = None
     completed = False
     try:
+        browser_options = {}
+        if payload.get("show_browser"):
+            session = await client.create_browser_session(timeout=15)
+            session_id = session.browser_session_id
+            browser_options["browser_session_id"] = session_id
+            viewer_url = session.app_url or f"https://app.skyvern.com/browser-session/{session_id}"
+            send({"kind": "browser_view", "url": viewer_url})
         task = await client.run_task(
             prompt=payload["prompt"], url=payload["url"],
             max_steps=100, data_extraction_schema=TestReport.model_json_schema(),
             wait_for_completion=False,
+            **browser_options,
         )
         run_id = task.run_id
         seen = set()
@@ -53,7 +62,11 @@ async def run(payload, send=emit):
                 await client.cancel_run(run_id)
             except Exception:
                 pass
-        await client.aclose()
+        try:
+            if session_id:
+                await client.close_browser_session(session_id)
+        finally:
+            await client.aclose()
 
 
 async def run_with_cancel(payload):
