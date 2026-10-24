@@ -1,0 +1,322 @@
+"""Main window: sidebar, page switching, event pump."""
+from __future__ import annotations
+
+import queue
+import os
+import time
+from dataclasses import asdict
+from typing import Optional
+
+import customtkinter as ctk
+
+from .agent_runner import BrowserAgentRunner
+from .config import C, FONT, HISTORY_FILE, SETTINGS_FILE, TASKS_FILE
+from .git_monitor import GitMonitor
+from .models import DEFAULT_TASKS, RegressionTask, RunRecord, load_json, save_json, time_ago
+from .page_home import HomePageMixin
+from .page_run import RunPageMixin
+from .page_tasks_settings import TasksSettingsMixin
+from .widgets import card, label, primary_btn
+
+PAGES = ("Home", "Run Agent", "Regression Tasks", "Settings")
+
+
+class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
+    """FIX Checker: runs an AI browser test after every commit."""
+
+    REFRESH = {
+        "Home": "refresh_home",
+        "Run Agent": "refresh_run",
+        "Regression Tasks": "refresh_tasks",
+        "Settings": "refresh_settings",
+    }
+
+    def __init__(self) -> None:
+        super().__init__()
+        ctk.set_appearance_mode("dark")
+        self.title("FIX Checker")
+        self.geometry("1280x820")
+        self.minsize(1080, 700)
+        self.configure(fg_color=C["bg"])
+
+        self.settings = self._load_settings()
+        self.tasks = self._load_tasks()
+        self.history = self._load_history()
+        self.current: Optional[RunRecord] = None
+        self.active_run: Optional[RunRecord] = None
+        self.pending_runs = []
+        self.ui_events = queue.Queue()
+        self.runner = BrowserAgentRunner()
+        self.monitor = GitMonitor(self.on_commit)
+
+        self._build_shell()
+        self._build_pages()
+        self.show_page("Home")
+        if self.settings.get("repo_path"):
+            self.monitor.start(self.settings["repo_path"])
+        self.after(200, self._pump)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # -- stored state ------------------------------------------------------
+    @staticmethod
+    def _defaults() -> dict:
+        return {
+            "openai_key": "",
+            "model": "gpt-6-luna",
+            "base_url": "http://localhost:3000",
+            "repo_path": "",
+            "auto_run": True,
+            "engine": "skyvern",
+            "test_current_fix": True,
+            "target_path": "/",
+            "fix_text": "",
+            "show_browser": False,
+        }
+
+    def _load_settings(self) -> dict:
+        merged = self._defaults()
+        data = load_json(SETTINGS_FILE, {})
+        if isinstance(data, dict):
+            merged.update(data)
+        merged["openai_key"] = merged.get("openai_key") or os.getenv("OPENAI_API_KEY", "")
+        return merged
+
+    def _load_tasks(self) -> list:
+        data = load_json(TASKS_FILE, None)
+        tasks = []
+        if isinstance(data, list):
+            for row in data:
+                try:
+                    tasks.append(RegressionTask(**row))
+                except TypeError:
+                    continue
+        return tasks if isinstance(data, list) else [RegressionTask(**asdict(t)) for t in DEFAULT_TASKS]
+
+    def _load_history(self) -> list:
+        data = load_json(HISTORY_FILE, [])
+        history = []
+        if isinstance(data, list):
+            for row in data:
+                try:
+                    record = RunRecord(**row)
+                    if record.status == "running":
+                        record.status = "failed"
+                        record.report = {"status": "FAILED", "error_details": "Application closed during this run."}
+                    history.append(record)
+                except TypeError:
+                    continue
+        return history
+
+    def save_state(self) -> None:
+        save_json(SETTINGS_FILE, self.settings)
+        save_json(TASKS_FILE, [asdict(t) for t in self.tasks])
+        save_json(HISTORY_FILE, [asdict(r) for r in self.history[:50]])
+
+    # -- shell -------------------------------------------------------------
+    def _build_shell(self) -> None:
+        sidebar = ctk.CTkFrame(self, width=260, fg_color=C["panel"], corner_radius=0)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+
+        brand = ctk.CTkFrame(sidebar, fg_color="transparent")
+        brand.pack(fill="x", padx=18, pady=(18, 10))
+        ctk.CTkLabel(
+            brand, text="◆", text_color=C["accent"], font=(FONT, 20, "bold")
+        ).pack(side="left")
+        label(brand, "FIX Checker", size=16, bold=True).pack(side="left", padx=8)
+
+        self.nav = {}
+        for name in PAGES:
+            btn = ctk.CTkButton(
+                sidebar,
+                text=name,
+                anchor="w",
+                fg_color="transparent",
+                hover_color=C["card_hover"],
+                text_color=C["muted"],
+                font=(FONT, 14),
+                corner_radius=8,
+                height=34,
+                command=lambda n=name: self.show_page(n),
+            )
+            btn.pack(fill="x", padx=14, pady=2)
+            self.nav[name] = btn
+
+        hist_card = card(sidebar)
+        hist_card.pack(fill="both", expand=True, padx=14, pady=(14, 8))
+        label(hist_card, "Last fixes verified", size=12, color=C["muted"], bold=True).pack(
+            anchor="w", padx=12, pady=(10, 4)
+        )
+        self.hist_list = ctk.CTkScrollableFrame(hist_card, fg_color="transparent")
+        self.hist_list.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+
+        ai = card(sidebar)
+        ai.pack(fill="x", padx=14, pady=(0, 14))
+        label(ai, "AI", size=12, color=C["muted"], bold=True).pack(
+            anchor="w", padx=12, pady=(10, 0)
+        )
+        self.ai_model = label(ai, self.settings["model"], size=13, bold=True)
+        self.ai_model.pack(anchor="w", padx=12)
+        primary_btn(ai, "Test latest commit", self.test_latest).pack(
+            fill="x", padx=12, pady=(8, 12)
+        )
+
+        main = ctk.CTkFrame(self, fg_color=C["bg"])
+        main.pack(side="left", fill="both", expand=True)
+
+        top = ctk.CTkFrame(main, height=52, fg_color=C["bg"], corner_radius=0)
+        top.pack(fill="x")
+        top.pack_propagate(False)
+        self.page_title = label(top, "Home", size=17, bold=True)
+        self.page_title.pack(side="left", padx=22)
+        self.sync_dot = label(top, "● Repo synced", size=12, color=C["muted"])
+        self.sync_dot.pack(side="right", padx=22)
+
+        self.container = ctk.CTkFrame(main, fg_color=C["bg"])
+        self.container.pack(fill="both", expand=True)
+
+    def _build_pages(self) -> None:
+        self.pages = {name: ctk.CTkFrame(self.container, fg_color=C["bg"]) for name in PAGES}
+        self._build_home(self.pages["Home"])
+        self._build_run(self.pages["Run Agent"])
+        self._build_tasks(self.pages["Regression Tasks"])
+        self._build_settings(self.pages["Settings"])
+        self.refresh_history()
+
+    def show_page(self, name: str) -> None:
+        for child in self.container.winfo_children():
+            child.pack_forget()
+        self.pages[name].pack(fill="both", expand=True)
+        self.page_title.configure(text=name)
+        for n, btn in self.nav.items():
+            btn.configure(
+                fg_color=C["card"] if n == name else "transparent",
+                text_color=C["text"] if n == name else C["muted"],
+            )
+        method = getattr(self, self.REFRESH[name], None)
+        if method:
+            method()
+
+    # -- events ------------------------------------------------------------
+    def _pump(self) -> None:
+        if getattr(self, "_closing", False):
+            return
+        try:
+            for _ in range(100):
+                self._handle_step(self.runner.steps.get_nowait())
+        except queue.Empty:
+            pass
+        try:
+            for _ in range(20):
+                sha, message = self.ui_events.get_nowait()
+                self._record_commit(sha, message)
+        except queue.Empty:
+            pass
+        if self.active_run is None and not self.runner.busy and self.pending_runs:
+            self.launch_agent(self.pending_runs.pop(0))
+        self.after(200, self._pump)
+
+    def _handle_step(self, item: dict) -> None:
+        kind = item.get("kind")
+        if kind == "log":
+            self._append_log(item.get("text", ""))
+        elif kind == "error":
+            self._append_log(f"ERROR: {item.get('text', '')}")
+        elif kind == "done":
+            self._finish_run(item.get("report"))
+
+    def on_commit(self, sha: str, message: str) -> None:
+        """Called from the monitor thread; marshal onto the UI thread."""
+        self.ui_events.put((sha, message))
+
+    def _record_commit(self, sha: str, message: str) -> None:
+        rec = RunRecord(
+            title=message,
+            description=self.run_fix.get("1.0", "end").strip(),
+            commit=sha,
+            path=self.run_path.get() if hasattr(self, "run_path") else "/",
+            status="queued",
+            tag="commit",
+        )
+        self.history.insert(0, rec)
+        self.current = rec
+        self.refresh_history()
+        if self.settings.get("auto_run"):
+            self.pending_runs.append(rec)
+        self.save_state()
+
+    def test_latest(self) -> None:
+        if self.active_run is not None or self.runner.busy:
+            self._append_log("A test is already running. Wait for it to finish or cancel it.")
+            self.show_page("Run Agent")
+            return
+        info = self.monitor.current()
+        if info:
+            sha, subject = info
+            rec = RunRecord(
+                title=subject, description="Manual run", commit=sha, status="queued", tag="manual"
+            )
+            self.history.insert(0, rec)
+            self.current = rec
+            self.refresh_history()
+            self.launch_agent(rec)
+        else:
+            self._append_log("No repo selected - open Settings and pick your Git repo folder.")
+            self.show_page("Settings")
+
+    def _finish_run(self, report) -> None:
+        rec = self.active_run
+        if rec is None:
+            return
+        rec.finished = time.time()
+        if report is None:
+            rec.status = "failed"
+            rec.report = {"status": "failed", "error_details": "Agent could not complete the run."}
+        else:
+            rec.status = getattr(report, "status", "failed").lower()
+            rec.report = (
+                report.model_dump() if hasattr(report, "model_dump") else dict(report.__dict__)
+            )
+        self.save_state()
+        self.refresh_history()
+        self._show_result(rec)
+        self.active_run = None
+
+    def refresh_history(self) -> None:
+        if not hasattr(self, "hist_list"):
+            return
+        for child in self.hist_list.winfo_children():
+            child.destroy()
+        for rec in self.history[:12]:
+            row = ctk.CTkFrame(self.hist_list, fg_color="transparent")
+            row.pack(fill="x", padx=6, pady=2)
+            label(row, (rec.title or rec.commit[:7] or "untitled")[:26], size=12).pack(
+                side="left"
+            )
+            label(row, time_ago(rec.started), size=11, color=C["muted"]).pack(side="right")
+        self.refresh_home()
+
+    # -- shutdown ----------------------------------------------------------
+    def _on_close(self) -> None:
+        if getattr(self, "_closing", False):
+            return
+        self._closing = True
+        self.settings.update(target_path=self.run_path.get().strip() or "/",
+                             fix_text=self.run_fix.get("1.0", "end").strip(),
+                             show_browser=bool(self.run_headless.get()))
+        self.save_state()
+        self.monitor.stop()
+        self.runner.close()
+        self.withdraw()
+        self._await_shutdown()
+
+    def _await_shutdown(self) -> None:
+        if getattr(self, "_shutdown_complete", False):
+            return
+        if self.runner.thread.is_alive():
+            self.after(50, self._await_shutdown)
+        else:
+            for callback in self.tk.call("after", "info"):
+                self.tk.call("after", "cancel", callback)
+            self._shutdown_complete = True
+            self.destroy()

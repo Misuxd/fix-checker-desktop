@@ -1,0 +1,2 @@
+# Install in .skyvern-venv, separately from requirements.txt.
+skyvern[local]==1.0.56
