@@ -4,32 +4,30 @@ Windows desktop application that tests a website after local Git commits, using
 Skyvern AI or browser-use. The existing Home, Run Agent, Regression Tasks and
 Settings pages are preserved.
 
-## Install (Python 3.12+)
+## Install without an IDE (Windows, Python 3.12+)
 
-Run from PowerShell in this directory:
+1. Install standard Python 3.12 or newer if it is not already installed. Include
+   the Python launcher, Tcl/Tk and pip in the Python installer. Git must also be
+   installed to monitor local repositories.
+2. Download/extract the project, then double-click **`setup.bat`**. An internet
+   connection is required. Setup creates both environments, installs all Python
+   packages and downloads Chromium for each browser engine. Leave the window open
+   until it says setup completed; errors remain visible if installation fails.
+3. Double-click **`start.bat`** to open FIX Checker. No IDE or terminal commands
+   are required. You can run setup again to repair or finish an installation.
+
+For command-line installation, run from PowerShell in this directory:
 
 ```powershell
-.\setup.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 .\start.ps1
 ```
 
-You can also double-click `start.bat` after installation.
-
-If Python is not on PATH, supply an installed interpreter:
-
-```powershell
-.\setup.ps1 -Python 'C:\path\to\python.exe'
-```
-
-The equivalent installation commands are:
+Setup detects the Python launcher, existing project environments and Python on
+PATH. If needed, supply an installed interpreter explicitly:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m playwright install chromium
-python -m venv .skyvern-venv
-.\.skyvern-venv\Scripts\python.exe -m pip install -r requirements-skyvern.txt
-.\.venv\Scripts\python.exe main.py
+.\setup.bat -Python 'C:\path\to\python.exe'
 ```
 
 The main dependencies are customtkinter, browser-use, langchain-openai,
