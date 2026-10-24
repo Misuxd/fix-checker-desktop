@@ -6,34 +6,8 @@ Settings pages are preserved.
 
 ## Install without an IDE (Windows, Python 3.12+)
 
-1. Install standard Python 3.12 or newer if it is not already installed. Include
-   the Python launcher, Tcl/Tk and pip in the Python installer. Git must also be
-   installed to monitor local repositories.
-2. Download/extract the project, then double-click **`setup.bat`**. An internet
-   connection is required. Setup creates both environments, installs all Python
-   packages and downloads Chromium for each browser engine. Leave the window open
-   until it says setup completed; errors remain visible if installation fails.
-3. Double-click **`start.bat`** to open FIX Checker. No IDE or terminal commands
-   are required. You can run setup again to repair or finish an installation.
-
-For command-line installation, run from PowerShell in this directory:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
-.\start.ps1
-```
-
-Setup detects the Python launcher, existing project environments and Python on
-PATH. If needed, supply an installed interpreter explicitly:
-
-```powershell
-.\setup.bat -Python 'C:\path\to\python.exe'
-```
-
-The main dependencies are customtkinter, browser-use, langchain-openai,
-playwright, GitPython and pydantic. Skyvern installs as `skyvern[local]` in
-`.skyvern-venv`. Its dependencies conflict with those of browser-use, so do not
-install both in the same environment. `setup.ps1` keeps them separate.
+1. Start the `setup.bat` file
+2. After step 1, Start the app with the `start.bat` file
 
 ## Configure and run
 
