@@ -117,6 +117,11 @@ class RunPageMixin:
     def refresh_run(self) -> None:
         if not hasattr(self, "run_checks"):
             return
+        skyvern = self.settings.get("engine") == "skyvern"
+        self.run_headless.configure(
+            text="Show browser live (browser-use)" if skyvern else "Show browser live",
+            state="disabled" if skyvern else "normal",
+        )
         for child in self.run_checks.winfo_children():
             child.destroy()
         ctk.CTkCheckBox(

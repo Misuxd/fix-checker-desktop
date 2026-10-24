@@ -1,6 +1,7 @@
 import asyncio
 import json
 import queue
+import sys
 import tempfile
 import threading
 import unittest
@@ -65,6 +66,7 @@ class RunnerLifecycle(unittest.TestCase):
         while True:
             item = self.runner.steps.get(timeout=10)
             if item["kind"] == "done":
+                self.runner._job.result(timeout=10)
                 return item["report"]
 
     def test_missing_key_emits_one_failure_and_completes(self):
@@ -73,6 +75,34 @@ class RunnerLifecycle(unittest.TestCase):
             result = self.done()
         self.assertEqual(result.status, "FAILED")
         self.assertIn("API key", result.error_details)
+
+    def test_missing_provider_key_never_falls_back_to_other_provider(self):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "", "SKYVERN_API_KEY": ""}):
+            for engine, other_key, provider, env_name in (
+                ("skyvern", "openai_key", "Skyvern", "SKYVERN_API_KEY"),
+                ("browser-use", "skyvern_key", "OpenAI", "OPENAI_API_KEY"),
+            ):
+                with self.subTest(engine=engine):
+                    self.runner.submit({"base_url": "http://localhost", "engine": engine,
+                                        other_key: "other-provider-secret"}, "/", "Click", [], True)
+                    result = self.done()
+                    self.assertEqual(result.status, "FAILED")
+                    self.assertIn(f"{provider} API key is missing", result.error_details)
+                    self.assertIn(env_name, result.error_details)
+
+    def test_skyvern_uses_own_saved_key_or_environment_without_local_browser(self):
+        self.runner._browser = Mock(side_effect=AssertionError("Skyvern must use its cloud browser"))
+        self.runner._skyvern = AsyncMock(return_value=report())
+        for saved_key in ("saved-skyvern-key", ""):
+            with self.subTest(saved_key=bool(saved_key)), patch.dict(
+                "os.environ", {"SKYVERN_API_KEY": "env-skyvern-key", "OPENAI_API_KEY": "openai-key"},
+            ):
+                settings = {"base_url": "https://example.test", "engine": "skyvern",
+                            "skyvern_key": saved_key, "openai_key": "saved-openai-key"}
+                self.runner.submit(settings, "/", "Click", [], True)
+                self.assertEqual(self.done().status, "PASSED")
+                self.assertEqual(self.runner._skyvern.call_args.args[1], saved_key or "env-skyvern-key")
+        self.runner._browser.assert_not_called()
 
     def test_reject_overlap_and_clean_cancel(self):
         started = threading.Event()
@@ -156,8 +186,57 @@ class GitAndUIState(unittest.TestCase):
         with patch("fix_checker.app.load_json", return_value=[]):
             self.assertEqual(DeveloperAppUI._load_tasks(Mock()), [])
 
+    def test_settings_load_provider_keys_separately(self):
+        from fix_checker.app import DeveloperAppUI
+        app = SimpleNamespace(_defaults=DeveloperAppUI._defaults)
+        with patch("fix_checker.app.load_json", return_value={"openai_key": "saved-openai"}), \
+             patch.dict("os.environ", {"OPENAI_API_KEY": "env-openai", "SKYVERN_API_KEY": "env-skyvern"}):
+            settings = DeveloperAppUI._load_settings(app)
+        self.assertEqual(settings["openai_key"], "saved-openai")
+        self.assertEqual(settings["skyvern_key"], "env-skyvern")
+
 
 class SkyvernContract(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_pipe_completion_and_cancellation(self):
+        script = """
+import asyncio
+from fix_checker import skyvern_worker as worker
+async def fake_run(payload):
+    try:
+        if payload.get("wait"):
+            await asyncio.sleep(60)
+        return worker.TestReport(status="PASSED", stopped_at_step=1,
+            stopped_url=payload["url"], failed_test_name="", error_details="")
+    finally:
+        worker.emit({"kind": "log", "text": "cleanup complete"})
+worker.run = fake_run
+worker.main()
+"""
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable, "-u", "-c", script,
+                    cwd=str(Path(__file__).resolve().parent.parent),
+                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                try:
+                    payload = dict(key="dummy", url="https://example.test", wait=cancel)
+                    commands = json.dumps(payload) + "\n" + ('{"cancel":true}\n' if cancel else "")
+                    process.stdin.write(commands.encode())
+                    await process.stdin.drain()
+                    output = (await asyncio.wait_for(process.stdout.read(), timeout=10)).decode()
+                    self.assertEqual(await process.wait(), 0, output)
+                    events = [json.loads(line[len("FIX_CHECKER_EVENT "):])
+                              for line in output.splitlines() if line.startswith("FIX_CHECKER_EVENT ")]
+                    self.assertIn({"kind": "log", "text": "cleanup complete"}, events)
+                    self.assertEqual(events[-1]["report"]["status"], "FAILED" if cancel else "PASSED")
+                finally:
+                    if process.returncode is None:
+                        process.kill()
+                        await process.wait()
+                    process.stdin.close()
+
     async def test_schema_status_polling_output_and_cleanup(self):
         from fix_checker.skyvern_worker import run
         for status in ("completed", "failed"):
@@ -166,19 +245,33 @@ class SkyvernContract(unittest.IsolatedAsyncioTestCase):
                 get_run=AsyncMock(return_value=SimpleNamespace(status=status, step_count=4,
                     output=report().model_dump(), failure_reason="Button missing")),
                 aclose=AsyncMock(), cancel_run=AsyncMock())
-            Skyvern = Mock(local=Mock(return_value=client))
+            Skyvern = Mock(return_value=client)
             RunStatus = lambda value: SimpleNamespace(is_final=lambda: True)
-            modules = {"skyvern": SimpleNamespace(Skyvern=Skyvern, RunStatus=RunStatus),
-                       "skyvern.schemas.llm": SimpleNamespace(LLMConfig=Mock())}
+            modules = {"skyvern": SimpleNamespace(Skyvern=Skyvern, RunStatus=RunStatus)}
             events = []
             with patch.dict("sys.modules", modules):
-                result = await run(dict(model="gpt-6-luna", key="dummy", url="http://localhost",
-                                        address="http://localhost:9222", prompt="Click"), events.append)
+                result = await run(dict(key="skyvern-secret", url="https://example.test",
+                                       prompt="Click"), events.append)
             self.assertEqual(result.status, "PASSED" if status == "completed" else "FAILED")
+            Skyvern.assert_called_once_with(api_key="skyvern-secret")
+            self.assertNotIn("browser_address", client.run_task.call_args.kwargs)
+            self.assertNotIn("model", client.run_task.call_args.kwargs)
             schema = client.run_task.call_args.kwargs["data_extraction_schema"]
             self.assertEqual(set(schema["required"]), set(report().model_dump()))
             self.assertTrue(events)
             client.aclose.assert_awaited_once()
+
+    async def test_cancel_stops_cloud_run_and_closes_client(self):
+        from fix_checker.skyvern_worker import run
+        client = SimpleNamespace(
+            run_task=AsyncMock(return_value=SimpleNamespace(run_id="tsk_cancel")),
+            get_run=AsyncMock(side_effect=asyncio.CancelledError),
+            cancel_run=AsyncMock(), aclose=AsyncMock())
+        modules = {"skyvern": SimpleNamespace(Skyvern=Mock(return_value=client), RunStatus=Mock())}
+        with patch.dict("sys.modules", modules), self.assertRaises(asyncio.CancelledError):
+            await run(dict(key="skyvern-secret", url="https://example.test", prompt="Click"))
+        client.cancel_run.assert_awaited_once_with("tsk_cancel")
+        client.aclose.assert_awaited_once()
 
 
 if __name__ == "__main__":

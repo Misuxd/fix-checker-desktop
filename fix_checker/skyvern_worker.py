@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+import threading
 
 from .models import TestReport
 
@@ -14,19 +16,12 @@ def emit(event):
 
 async def run(payload, send=emit):
     from skyvern import Skyvern, RunStatus
-    from skyvern.schemas.llm import LLMConfig
-    config = LLMConfig(
-        model_name="openai/" + payload["model"], required_env_vars=[],
-        supports_vision=True, add_assistant_prefix=False,
-        litellm_params={"api_key": payload["key"]}, temperature=None,
-        max_tokens=None, max_completion_tokens=8192, reasoning_effort="none",
-    )
-    client = Skyvern.local(llm_config=config, use_in_memory_db=True)
+    client = Skyvern(api_key=payload["key"])
     run_id = None
     completed = False
     try:
         task = await client.run_task(
-            prompt=payload["prompt"], url=payload["url"], browser_address=payload["address"],
+            prompt=payload["prompt"], url=payload["url"],
             max_steps=100, data_extraction_schema=TestReport.model_json_schema(),
             wait_for_completion=False,
         )
@@ -61,10 +56,28 @@ async def run(payload, send=emit):
         await client.aclose()
 
 
+async def run_with_cancel(payload):
+    loop = asyncio.get_running_loop()
+    task = asyncio.create_task(run(payload))
+
+    def listen():
+        # Any follow-up input or parent disconnect requests cancellation. Read the
+        # raw pipe so a waiting daemon thread holds no buffered stdin lock on exit.
+        os.read(sys.stdin.fileno(), 1)
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(task.cancel)
+
+    threading.Thread(target=listen, daemon=True).start()
+    return await task
+
+
 def main():
-    payload = json.loads(sys.stdin.readline())
+    payload = json.loads(sys.stdin.buffer.raw.readline())
     try:
-        report = asyncio.run(run(payload))
+        report = asyncio.run(run_with_cancel(payload))
+    except asyncio.CancelledError:
+        report = TestReport(status="FAILED", stopped_at_step=0, stopped_url=payload["url"],
+                            failed_test_name="Skyvern execution", error_details="Run cancelled.")
     except Exception as exc:
         text = f"{type(exc).__name__}: {exc}".replace(payload["key"], "[redacted]")
         report = TestReport(status="FAILED", stopped_at_step=0, stopped_url=payload["url"],

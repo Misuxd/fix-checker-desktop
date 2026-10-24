@@ -118,12 +118,20 @@ class BrowserAgentRunner:
         report = None
         url = ""
         diagnostics = []
+        self._secrets = [value for value in (
+            settings.get("openai_key"), settings.get("skyvern_key"),
+            os.getenv("OPENAI_API_KEY"), os.getenv("SKYVERN_API_KEY"),
+        ) if value]
         try:
             url = target_url(settings.get("base_url", ""), path)
-            key = settings.get("openai_key") or os.getenv("OPENAI_API_KEY", "")
+            skyvern = settings.get("engine") == "skyvern"
+            key_name, env_name, provider = (
+                ("skyvern_key", "SKYVERN_API_KEY", "Skyvern") if skyvern else
+                ("openai_key", "OPENAI_API_KEY", "OpenAI")
+            )
+            key = settings.get(key_name) or os.getenv(env_name, "")
             if not key:
-                raise ValueError("OpenAI API key is missing. Set it in Settings or OPENAI_API_KEY.")
-            self._secrets = [key]
+                raise ValueError(f"{provider} API key is missing. Set it in Settings or {env_name}.")
             self._step_number = 0
             if settings.get("test_current_fix", True) and not fix_text.strip():
                 raise ValueError("Describe the current fix trajectory, or deselect Current fix.")
@@ -132,36 +140,36 @@ class BrowserAgentRunner:
             prompt = self.build_prompt(settings, path, fix_text, tasks)
             self._log(f"Starting {settings.get('engine', 'browser-use')} at {url}")
             async with asyncio.timeout(float(settings.get("timeout", 900))):
-                error_event = asyncio.Event()
-                async with self._browser(headless, diagnostics, error_event) as address:
-                    engine = self._skyvern if settings.get("engine") == "skyvern" else None
-                    work = asyncio.create_task(engine(settings, key, url, prompt, address) if engine
-                                               else self._browser_use(settings, key, prompt, address))
-                    failure = asyncio.create_task(error_event.wait())
-                    try:
-                        await asyncio.wait([work, failure], return_when=asyncio.FIRST_COMPLETED)
-                        if diagnostics:
+                if skyvern:
+                    report = await self._skyvern(settings, key, url, prompt)
+                else:
+                    error_event = asyncio.Event()
+                    async with self._browser(headless, diagnostics, error_event) as address:
+                        work = asyncio.create_task(self._browser_use(settings, key, prompt, address))
+                        failure = asyncio.create_task(error_event.wait())
+                        try:
+                            await asyncio.wait([work, failure], return_when=asyncio.FIRST_COMPLETED)
+                            if diagnostics:
+                                work.cancel()
+                                await asyncio.gather(work, return_exceptions=True)
+                                first = diagnostics[0]
+                                report = TestReport(
+                                    status="FAILED", stopped_at_step=first["step"],
+                                    stopped_url=first["url"], failed_test_name="Browser diagnostics",
+                                    error_details=first["text"],
+                                )
+                            else:
+                                report = await work
+                        finally:
                             work.cancel()
-                            await asyncio.gather(work, return_exceptions=True)
-                            first = diagnostics[0]
-                            report = TestReport(
-                                status="FAILED", stopped_at_step=first["step"],
-                                stopped_url=first["url"], failed_test_name="Browser diagnostics",
-                                error_details=first["text"],
-                            )
-                        else:
-                            report = await work
-                    finally:
-                        work.cancel()
-                        failure.cancel()
-                        await asyncio.gather(work, failure, return_exceptions=True)
+                            failure.cancel()
+                            await asyncio.gather(work, failure, return_exceptions=True)
         except asyncio.CancelledError:
             report = self._failure("Run cancelled.", url)
         except Exception as exc:
             text = f"{type(exc).__name__}: {exc}"
-            for secret in (settings.get("openai_key"), os.getenv("OPENAI_API_KEY")):
-                if secret:
-                    text = text.replace(secret, "[redacted]")
+            for secret in self._secrets:
+                text = text.replace(secret, "[redacted]")
             self.steps.put({"kind": "error", "text": text})
             report = self._failure(text, url)
         finally:
@@ -229,7 +237,7 @@ class BrowserAgentRunner:
         finally:
             await browser.stop()
 
-    async def _skyvern(self, settings, key, url, prompt, address):
+    async def _skyvern(self, settings, key, url, prompt):
         from .config import APP_DIR
         executable = APP_DIR / ".skyvern-venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         if not executable.exists():
@@ -243,11 +251,9 @@ class BrowserAgentRunner:
         )
         report = None
         try:
-            payload = dict(model=settings.get("model") or "gpt-6-luna", key=key,
-                           url=url, prompt=prompt, address=address)
+            payload = dict(key=key, url=url, prompt=prompt)
             process.stdin.write((json.dumps(payload) + "\n").encode())
             await process.stdin.drain()
-            process.stdin.close()
             while line := await process.stdout.readline():
                 text = line.decode("utf-8", errors="replace").rstrip().replace(key, "[redacted]")
                 if text.startswith("FIX_CHECKER_EVENT "):
@@ -266,8 +272,15 @@ class BrowserAgentRunner:
             return report
         finally:
             if process.returncode is None:
-                process.terminate()
-                await process.wait()
+                try:
+                    process.stdin.write(b'{"cancel": true}\n')
+                    await process.stdin.drain()
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except (BrokenPipeError, ConnectionResetError, asyncio.TimeoutError):
+                    if process.returncode is None:
+                        process.terminate()
+                        await process.wait()
+            process.stdin.close()
 
     @staticmethod
     def _extract_report(value) -> TestReport:

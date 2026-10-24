@@ -37,6 +37,26 @@ def desktop():
             for page in app.pages:
                 app.show_page(page)
                 app.update_idletasks()
+            assert app.set_key_label.cget("text") == "Skyvern API key"
+            assert app.set_model.cget("state") == "disabled"
+            app.set_key.insert(0, "skyvern-draft")
+            app.set_engine.set("browser-use")
+            app._change_engine("browser-use")
+            assert app.set_key_label.cget("text") == "OpenAI API key"
+            assert app.set_key.get() == ""
+            assert app.set_model.cget("state") == "normal"
+            app.set_key.insert(0, "openai-draft")
+            app.set_engine.set("skyvern")
+            app._change_engine("skyvern")
+            assert app.set_key.get() == "skyvern-draft"
+            app.save_settings()
+            assert app.settings["skyvern_key"] == "skyvern-draft"
+            assert app.settings["openai_key"] == "openai-draft"
+            app.refresh_settings()
+            assert app.set_key.get() == "skyvern-draft"
+            app.show_page("Run Agent")
+            assert app.run_headless.cget("state") == "disabled"
+            print("PASS: provider labels, separate key drafts, save/reload and model availability")
             app.add_task()
             app.update()
             for child in app.winfo_children():

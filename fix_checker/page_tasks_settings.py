@@ -108,14 +108,21 @@ class TasksSettingsMixin:
         body.pack(fill="both", expand=True, padx=22, pady=16)
         label(body, "Settings", size=16, bold=True).pack(anchor="w", padx=14, pady=(12, 8))
 
-        self.set_key = self._field(body, "OpenAI API key")
+        label(body, "Browser engine", size=12, color=C["muted"]).pack(anchor="w", padx=14, pady=(8, 2))
+        self.set_engine = ctk.CTkOptionMenu(
+            body, values=["browser-use", "skyvern"], command=self._change_engine,
+        )
+        self.set_engine.pack(anchor="w", padx=14)
+        self.set_key_label = label(body, "", size=12, color=C["muted"], bold=True)
+        self.set_key_label.pack(anchor="w", padx=14, pady=(8, 2))
+        self.set_key = entry(body, width=520)
+        self.set_key.pack(anchor="w", padx=14)
         self.set_key.configure(show="*")
-        self.set_model = self._field(body, "Model name")
+        self.set_engine_note = label(body, "", size=11, color=C["muted"])
+        self.set_engine_note.pack(anchor="w", padx=14, pady=(4, 0))
+        self.set_model = self._field(body, "Model name (browser-use)")
         self.set_url = self._field(body, "Base site URL")
         self.set_repo = self._field(body, "Git repo path")
-        label(body, "Browser engine", size=12, color=C["muted"]).pack(anchor="w", padx=14, pady=(8, 2))
-        self.set_engine = ctk.CTkOptionMenu(body, values=["browser-use", "skyvern"])
-        self.set_engine.pack(anchor="w", padx=14)
 
         self.set_auto = ctk.CTkSwitch(
             body,
@@ -148,18 +155,37 @@ class TasksSettingsMixin:
             return
         s = self.settings
         self.set_engine.set(s.get("engine", "skyvern"))
+        self._key_drafts = {key: s.get(key, "") for key in ("openai_key", "skyvern_key")}
+        self.set_model.configure(state="normal")
         for box, key in (
-            (self.set_key, "openai_key"),
             (self.set_model, "model"),
             (self.set_url, "base_url"),
             (self.set_repo, "repo_path"),
         ):
             box.delete("0", "end")
             box.insert(0, s.get(key, ""))
+        self._show_engine_key(self.set_engine.get())
         if s.get("auto_run"):
             self.set_auto.select()
         else:
             self.set_auto.deselect()
+
+    def _show_engine_key(self, engine) -> None:
+        self._key_engine = engine
+        skyvern = engine == "skyvern"
+        self.set_key_label.configure(text="Skyvern API key" if skyvern else "OpenAI API key")
+        self.set_key.delete("0", "end")
+        self.set_key.insert(0, self._key_drafts["skyvern_key" if skyvern else "openai_key"])
+        self.set_engine_note.configure(text=(
+            "Skyvern uses a cloud browser and needs a publicly reachable site URL."
+            if skyvern else "browser-use uses your OpenAI API key and runs Chromium locally."
+        ))
+        self.set_model.configure(state="disabled" if skyvern else "normal")
+
+    def _change_engine(self, engine) -> None:
+        key = "skyvern_key" if self._key_engine == "skyvern" else "openai_key"
+        self._key_drafts[key] = self.set_key.get().strip()
+        self._show_engine_key(engine)
 
     def pick_repo(self) -> None:
         path = filedialog.askdirectory()
@@ -179,9 +205,11 @@ class TasksSettingsMixin:
         except Exception as exc:
             self.settings_note.configure(text=f"Invalid settings: {exc}")
             return
+        key = "skyvern_key" if self.set_engine.get() == "skyvern" else "openai_key"
+        self._key_drafts[key] = self.set_key.get().strip()
+        self.settings.update(self._key_drafts)
         self.settings.update(
             {
-                "openai_key": self.set_key.get().strip(),
                 "model": self.set_model.get().strip() or "gpt-6-luna",
                 "base_url": self.set_url.get().strip() or "http://localhost:3000",
                 "repo_path": self.set_repo.get().strip(),
@@ -190,6 +218,6 @@ class TasksSettingsMixin:
             }
         )
         self.save_state()
-        self.ai_model.configure(text=self.settings["model"])
+        self.ai_model.configure(text="Skyvern" if self.settings["engine"] == "skyvern" else self.settings["model"])
         self.settings_note.configure(text="Saved")
         self.monitor.start(self.settings["repo_path"])

@@ -37,16 +37,21 @@ install both in the same environment. `setup.ps1` keeps them separate.
 
 ## Configure and run
 
-1. Open Settings. Enter your own OpenAI API key (or set `OPENAI_API_KEY` before
-   starting the app), model `gpt-6-luna`, and the base URL of your running site.
-2. Select a local Git repository and the browser engine. Skyvern is the default;
-   browser-use is also available. Save settings.
+1. Open Settings and choose a browser engine. Skyvern is the default: enter your
+   **Skyvern API key** (or set `SKYVERN_API_KEY` before starting the app). For
+   browser-use, enter your **OpenAI API key** (or set `OPENAI_API_KEY`) and model
+   `gpt-6-luna`. Each engine's key is stored separately; changing engines updates
+   the field label and preserves both keys.
+2. Enter the base URL of your running site and select a local Git repository.
+   Skyvern Cloud needs a publicly reachable site URL. Use browser-use for
+   localhost sites. Save settings.
 3. In Regression Tasks, add or edit each flow's name, starting path and precise
    steps, including prerequisites, test credentials if needed and expected results.
 4. In Run Agent, enter a starting path or a full HTTP(S) URL, describe the fix
    trajectory, and select the current fix and/or saved regressions.
-5. Enable Show browser live to watch Chromium. Launch the agent or use Test latest
-   commit. Cancel stops the active run and closes its browser.
+5. With browser-use, enable Show browser live to watch Chromium. Launch the agent
+   or use Test latest commit. Cancel stops the active run, including requesting
+   cancellation of an active Skyvern Cloud run.
 
 The monitor polls local HEAD every three seconds; it does not poll GitHub's API.
 New commits queue while a test is running. The selected repo can be changed or
@@ -55,19 +60,22 @@ itself: the website URL must already serve the version you intend to verify.
 
 ## Engines and reports
 
-Both engines operate on an isolated local Chromium profile, including for
-localhost sites. Skyvern uses its embedded API and an ephemeral SQLite database;
-it does not require Skyvern Cloud, a Skyvern API key, Docker or PostgreSQL.
-The OpenAI model and API key come from Settings. Skyvern runs in a separate
-process and streams logs to the application's background asyncio worker.
-browser-use uses its native ChatOpenAI adapter; newer releases no longer accept
-a LangChain model as the agent's LLM.
+Skyvern uses its cloud API, authenticating with the Skyvern API key from Settings.
+Skyvern manages the browser and model; the OpenAI model setting applies only to
+browser-use. Skyvern runs in a separate process and streams status logs to the
+application's background asyncio worker. Cloud browsers cannot reach your
+machine's localhost; provide a public deployment or a URL exposed through a
+tunnel. The local Show browser live switch applies only to browser-use.
+browser-use operates on an isolated local Chromium profile, including for
+localhost sites, and uses its native ChatOpenAI adapter with the OpenAI key.
 
 The desktop event pump receives worker messages through queues. Browsing and AI
 calls run outside the Tk thread. A run is limited to 100 agent steps and 15
-minutes. The first observed JavaScript/console error, HTTP 404 or HTTP 5xx stops
-the run and produces FAILED with the URL, current agent step and error.
-Otherwise, only a validated structured agent result can produce PASSED:
+minutes. For browser-use, the first observed JavaScript/console error, HTTP 404 or
+HTTP 5xx stops the run and produces FAILED with the URL, current agent step and
+error. Skyvern Cloud follows the test instructions and returns its structured
+report; local browser diagnostic listeners do not attach to cloud runs.
+Only a validated structured agent result can produce PASSED:
 
 ```json
 {
@@ -91,8 +99,8 @@ ownership of an already-running test's result.
 
 Settings, selected tasks and up to 50 history entries live in `settings.json`,
 `tasks.json` and `history.json` in the project directory, independently of the
-working directory. The key field is masked; a key saved through Settings is
-stored as plaintext in settings.json. Local state, credentials, environments and
+working directory. The key field is masked; provider keys saved through Settings
+are stored as plaintext in settings.json. Local state, credentials, environments and
 agent artifacts are excluded by .gitignore. No API key ships with the project.
 
 ## Verification
@@ -108,8 +116,8 @@ Git monitor restarts, concurrency, cancellation, first-error stopping and run
 ownership. Desktop smoke checks open every page and the task editor, run a local
 fixture in real Chromium, attach browser-use and verify console/HTTP diagnostics.
 The browser-use agent smoke uses simulated LLM responses and real browser actions.
-The Skyvern smoke initializes its actual embedded API and in-memory database.
-These checks make no paid model calls. A full AI test requires your API key and
+The Skyvern smoke verifies the actual SDK's cloud API authentication using a
+mock HTTP transport. These checks make no paid model calls. A full AI test requires your API key and
 running target website.
 
 API references used for the integrations:

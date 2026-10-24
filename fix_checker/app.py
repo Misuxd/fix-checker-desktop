@@ -62,6 +62,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
     def _defaults() -> dict:
         return {
             "openai_key": "",
+            "skyvern_key": "",
             "model": "gpt-6-luna",
             "base_url": "http://localhost:3000",
             "repo_path": "",
@@ -79,6 +80,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         if isinstance(data, dict):
             merged.update(data)
         merged["openai_key"] = merged.get("openai_key") or os.getenv("OPENAI_API_KEY", "")
+        merged["skyvern_key"] = merged.get("skyvern_key") or os.getenv("SKYVERN_API_KEY", "")
         return merged
 
     def _load_tasks(self) -> list:
@@ -155,7 +157,8 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         label(ai, "AI", size=12, color=C["muted"], bold=True).pack(
             anchor="w", padx=12, pady=(10, 0)
         )
-        self.ai_model = label(ai, self.settings["model"], size=13, bold=True)
+        model = "Skyvern" if self.settings["engine"] == "skyvern" else self.settings["model"]
+        self.ai_model = label(ai, model, size=13, bold=True)
         self.ai_model.pack(anchor="w", padx=12)
         primary_btn(ai, "Test latest commit", self.test_latest).pack(
             fill="x", padx=12, pady=(8, 12)

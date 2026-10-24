@@ -1,23 +1,24 @@
-"""Initialize the actual embedded Skyvern API and ephemeral DB without LLM calls."""
+"""Verify the real Skyvern SDK authenticates with its own key; no network calls."""
 import asyncio
 
+import httpx
 from skyvern import Skyvern
-from skyvern.schemas.llm import LLMConfig
 
 
 async def main():
-    config = LLMConfig(model_name="openai/gpt-6-luna", required_env_vars=[],
-                       supports_vision=True, add_assistant_prefix=False,
-                       litellm_params={"api_key": "dummy-not-a-real-key"},
-                       temperature=None, max_tokens=None, max_completion_tokens=8192,
-                       reasoning_effort="none")
-    client = Skyvern.local(llm_config=config, use_in_memory_db=True)
-    try:
-        runs = await client.get_runs_v2(page=1, page_size=1)
-        assert isinstance(runs, list), type(runs)
-        print("PASS: embedded Skyvern API, model configuration and in-memory database")
-    finally:
-        await client.aclose()
+    def respond(request):
+        assert request.headers["x-api-key"] == "dummy-skyvern-key"
+        assert request.url.host == "api.skyvern.com"
+        return httpx.Response(200, json=[])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = Skyvern(api_key="dummy-skyvern-key", httpx_client=http)
+        try:
+            runs = await client.get_runs_v2(page=1, page_size=1)
+            assert isinstance(runs, list), type(runs)
+            print("PASS: real Skyvern cloud SDK sends the Skyvern API key")
+        finally:
+            await client.aclose()
 
 
 if __name__ == "__main__":
