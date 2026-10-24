@@ -18,10 +18,13 @@ from urllib.parse import urljoin, urlsplit
 from .models import TestReport
 
 
-def target_url(base: str, path: str) -> str:
-    base = base.strip().rstrip("/") + "/"
+def target_url(base: str, path: str | None = None) -> str:
+    base = base.strip()
     if urlsplit(base).scheme not in ("http", "https") or not urlsplit(base).hostname:
         raise ValueError("Base site URL must be an absolute http:// or https:// URL.")
+    if path is None:
+        return base
+    base = base.rstrip("/") + "/"
     path = path.strip() or "/"
     if path.startswith("//"):
         raise ValueError("Use a path or a complete http:// or https:// URL.")

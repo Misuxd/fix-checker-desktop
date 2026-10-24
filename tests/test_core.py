@@ -31,6 +31,10 @@ class ReportsAndPaths(unittest.TestCase):
         self.assertEqual(report("failed").status, "FAILED")
 
     def test_urls_and_selected_flows(self):
+        site_url = "https://site.test/app/checks?mode=test#current"
+        self.assertEqual(target_url(site_url), site_url)
+        self.assertIn(f"Target page: {site_url}", BrowserAgentRunner.build_prompt(
+            {"base_url": site_url}, None, "Click Save", []))
         self.assertEqual(target_url("http://localhost:3000", "/login"), "http://localhost:3000/login")
         self.assertEqual(target_url("https://site.test", "https://other.test/path"), "https://other.test/path")
         for base, path in [("broken", "/"), ("https://site.test", "file:///a"), ("https://site.test", "//other")]:
@@ -221,11 +225,12 @@ class GitAndUIState(unittest.TestCase):
     def test_settings_load_provider_keys_separately(self):
         from fix_checker.app import DeveloperAppUI
         app = SimpleNamespace(_defaults=DeveloperAppUI._defaults)
-        with patch("fix_checker.app.load_json", return_value={"openai_key": "saved-openai"}), \
+        with patch("fix_checker.app.load_json", return_value={"openai_key": "saved-openai", "target_path": "/old-path"}), \
              patch.dict("os.environ", {"OPENAI_API_KEY": "env-openai", "SKYVERN_API_KEY": "env-skyvern"}):
             settings = DeveloperAppUI._load_settings(app)
         self.assertEqual(settings["openai_key"], "saved-openai")
         self.assertEqual(settings["skyvern_key"], "env-skyvern")
+        self.assertNotIn("target_path", settings)
 
 
 class SkyvernContract(unittest.IsolatedAsyncioTestCase):

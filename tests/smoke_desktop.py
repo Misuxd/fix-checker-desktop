@@ -66,8 +66,25 @@ def desktop():
                     yield child
                     yield from descendants(child)
 
+            assert not hasattr(app, "run_path")
+            assert "Target path" not in [w.cget("text") for w in descendants(app.pages["Run Agent"])
+                                          if isinstance(w, ctk.CTkLabel)]
             app.history.append(RunRecord(title="Refresh fixture", started=time.time(), status="passed"))
             app.refresh_history()
+            fixture = app.history[-1]
+            cached = app._home_rows[fixture.id]
+            app.refresh_home()
+            assert app._home_rows[fixture.id] is cached
+            fixture.status = "failed"
+            app.refresh_home()
+            assert cached["status"].cget("text") == "FAILED"
+            app.home_status.set("passed")
+            app.refresh_home()
+            assert cached["frame"].winfo_exists() and cached["position"] is None
+            app.home_status.set("All statuses")
+            app.refresh_home()
+            assert app._home_rows[fixture.id] is cached and cached["position"] == 0
+            print("PASS: Home reuses cards, updates status and filters without rebuilding rows")
             app.home_search.insert(0, "Refresh fixture")
             app.set_repo.insert(0, "unsaved repository draft")
             with patch("fix_checker.models.time.time", return_value=time.time() + 61):
@@ -79,6 +96,7 @@ def desktop():
             print("PASS: minute refresh updates sidebar and home ages without clearing drafts or filters")
 
             app.run_fix.insert("1.0", "Click Save")
+            app.settings["base_url"] = "http://localhost:3000/app/checks?mode=test"
             for engine in ("skyvern", "browser-use"):
                 app.settings["engine"] = engine
                 app.refresh_run()
@@ -88,12 +106,15 @@ def desktop():
                     with patch.object(app.runner, "submit", return_value=True) as submit:
                         app.launch_agent()
                     assert submit.call_args.kwargs["headless"] == (not show)
+                    assert submit.call_args.args[1] is None
+                    assert app.active_run.path == app.settings["base_url"]
                     assert app.settings["show_browser"] == show
                     assert app.run_headless.cget("state") == "disabled"
                     app._finish_run(TestReport(status="PASSED", stopped_at_step=1,
                         stopped_url="http://localhost", failed_test_name="", error_details=""))
                     assert app.run_headless.cget("state") == "normal"
             print("PASS: live switch controls the next run for both engines and is locked during a run")
+            print("PASS: runs start at the configured site URL without a Target path field")
 
             app.add_task()
             app.update()

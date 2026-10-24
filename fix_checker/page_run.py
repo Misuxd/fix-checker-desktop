@@ -5,11 +5,11 @@ import customtkinter as ctk
 
 from .config import C, FONT, MONO, STATUS_COLORS
 from .models import RunRecord
-from .widgets import card, entry, ghost_btn, label, pill, primary_btn
+from .widgets import card, ghost_btn, label, pill, primary_btn
 
 
 class RunPageMixin:
-    """Target path, fix trajectory, regression checkboxes, live steps, result panel."""
+    """Fix trajectory, regression checkboxes, live steps and result panel."""
 
     def _build_run(self, parent) -> None:
         left = ctk.CTkFrame(parent, fg_color="transparent")
@@ -18,19 +18,8 @@ class RunPageMixin:
         right.pack(side="right", fill="y", padx=(0, 22), pady=16)
         right.pack_propagate(False)
 
-        target = card(left)
-        target.pack(fill="x")
-        label(target, "Target path", size=12, color=C["muted"], bold=True).pack(
-            anchor="w", padx=12, pady=(10, 2)
-        )
-        self.run_path = entry(target, placeholder_text="/")
-        self.run_path.insert(0, "/")
-        self.run_path.delete(0, "end")
-        self.run_path.insert(0, self.settings.get("target_path", "/"))
-        self.run_path.pack(fill="x", padx=12, pady=(0, 10))
-
         fix = card(left)
-        fix.pack(fill="x", pady=(10, 0))
+        fix.pack(fill="x")
         label(fix, "Fix + trajectory", size=12, color=C["muted"], bold=True).pack(
             anchor="w", padx=12, pady=(10, 2)
         )
@@ -171,11 +160,11 @@ class RunPageMixin:
         self.active_run = rec
 
         rec.status = "running"
+        rec.path = self.settings.get("base_url") or "http://localhost:3000"
         if rec.tag != "commit":
-            rec.path = self.run_path.get().strip() or "/"
             rec.description = self.run_fix.get("1.0", "end").strip()
         rec.report = {}
-        self.settings.update(target_path=rec.path, fix_text=rec.description,
+        self.settings.update(fix_text=rec.description,
                              show_browser=bool(self.run_headless.get()),
                              test_current_fix=bool(self.current_fix.get()))
         self.save_state()
@@ -189,7 +178,7 @@ class RunPageMixin:
 
         accepted = self.runner.submit(
             self.settings,
-            rec.path,
+            None,
             rec.description,
             [t for t in self.tasks if t.enabled],
             headless=not bool(self.run_headless.get()),

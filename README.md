@@ -47,8 +47,9 @@ install both in the same environment. `setup.ps1` keeps them separate.
    localhost sites. Save settings.
 3. In Regression Tasks, add or edit each flow's name and precise steps, including
    navigation, prerequisites, test credentials if needed and expected results.
-4. In Run Agent, enter a starting path or a full HTTP(S) URL, describe the fix
-   trajectory, and select the current fix and/or saved regressions.
+4. In Run Agent, describe the fix trajectory and select the current fix and/or
+   saved regressions. Runs start at the exact Base site URL from Settings;
+   describe any further navigation in the test steps.
 5. Enable Show browser live before launching to watch the run. With browser-use,
    this opens a local Chromium window; with Skyvern, it opens the cloud session's
    live viewer in your default browser (sign in to Skyvern if prompted). With the
@@ -98,6 +99,8 @@ must report failure rather than inventing an account. AI-driven checks still
 require review of the recorded evidence and clear expected outcomes.
 
 Home supports search, status/source filters and viewing historical reports.
+Home reuses existing run cards and groups rapid search input, keeping navigation,
+filtering and status updates responsive as history grows.
 History and Home refresh every 60 seconds, including relative timestamps, and
 update immediately when a run starts or finishes or a commit arrives. This
 refresh preserves form drafts and search/filter selections.

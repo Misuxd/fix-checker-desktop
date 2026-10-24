@@ -71,7 +71,6 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
             "auto_run": True,
             "engine": "skyvern",
             "test_current_fix": True,
-            "target_path": "/",
             "fix_text": "",
             "show_browser": False,
         }
@@ -81,6 +80,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         data = load_json(SETTINGS_FILE, {})
         if isinstance(data, dict):
             merged.update(data)
+        merged.pop("target_path", None)
         merged["openai_key"] = merged.get("openai_key") or os.getenv("OPENAI_API_KEY", "")
         merged["skyvern_key"] = merged.get("skyvern_key") or os.getenv("SKYVERN_API_KEY", "")
         return merged
@@ -253,7 +253,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
             title=message,
             description=self.run_fix.get("1.0", "end").strip(),
             commit=sha,
-            path=self.run_path.get() if hasattr(self, "run_path") else "/",
+            path=self.settings.get("base_url") or "http://localhost:3000",
             status="queued",
             tag="commit",
         )
@@ -321,8 +321,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         if getattr(self, "_closing", False):
             return
         self._closing = True
-        self.settings.update(target_path=self.run_path.get().strip() or "/",
-                             fix_text=self.run_fix.get("1.0", "end").strip(),
+        self.settings.update(fix_text=self.run_fix.get("1.0", "end").strip(),
                              show_browser=bool(self.run_headless.get()))
         self.save_state()
         self.monitor.stop()
