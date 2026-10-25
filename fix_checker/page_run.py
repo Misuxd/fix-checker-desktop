@@ -12,6 +12,11 @@ class RunPageMixin:
     """Regression task queue, live steps and result panel."""
 
     def _build_run(self, parent) -> None:
+        intro = ctk.CTkFrame(parent, fg_color="transparent")
+        intro.pack(fill="x", padx=22, pady=(10, 0))
+        label(intro, "Run a check on the flows that matter", size=18, bold=True).pack(anchor="w")
+        self.run_destination = label(intro, "", size=11, color=C["muted"], anchor="w", justify="left", wraplength=700)
+        self.run_destination.pack(fill="x", pady=(2, 0))
         left = ctk.CTkFrame(parent, fg_color="transparent")
         left.pack(side="left", fill="both", expand=True, padx=(22, 10), pady=16)
         left.grid_columnconfigure(0, weight=1)
@@ -25,8 +30,9 @@ class RunPageMixin:
         regs.grid(row=0, column=0, sticky="nsew")
         head = ctk.CTkFrame(regs, fg_color="transparent")
         head.pack(fill="x", padx=12, pady=(10, 4))
-        label(head, "Regression tasks", size=12, color=C["muted"], bold=True).pack(side="left")
-        ghost_btn(head, "+ Add regression task", lambda: self.show_page("Regression Tasks")).pack(
+        self.run_selection_note = label(head, "Choose regression tasks", size=12, color=C["muted"], bold=True)
+        self.run_selection_note.pack(side="left")
+        ghost_btn(head, "Manage tasks", lambda: self.show_page("Regression Tasks"), width=110).pack(
             side="right"
         )
         self.run_checks = ctk.CTkScrollableFrame(regs, fg_color="transparent", height=220)
@@ -45,17 +51,16 @@ class RunPageMixin:
         self.run_headless.pack(side="left")
         if self.settings.get("show_browser"):
             self.run_headless.select()
-        ghost_btn(opts, "Cancel", self.runner.cancel).pack(side="right", padx=4)
-        primary_btn(opts, "Launch agent in browser", lambda: self.launch_agent()).pack(
-            side="right"
-        )
-        self.browser_note = label(left, "", size=11, color=C["muted"], anchor="w", justify="left", wraplength=500)
+        self.run_cancel = ghost_btn(opts, "Stop run", self.runner.cancel, width=75, state="disabled")
+        self.run_cancel.pack(side="right", padx=4)
+        self.run_start = primary_btn(opts, "Run selected tasks", lambda: self.launch_agent(), width=145)
+        self.run_start.pack(side="right")
+        self.browser_note = label(left, "", size=11, color=C["muted"], anchor="w", justify="left", wraplength=350)
         self.browser_note.grid(row=2, column=0, sticky="ew", pady=(4, 0))
-        self.browser_note.bind("<Configure>", lambda event: self.browser_note.configure(wraplength=max(200, event.width)))
 
         log = card(left)
         log.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
-        label(log, "Live steps", size=12, color=C["muted"], bold=True).pack(
+        label(log, "Live activity", size=12, color=C["muted"], bold=True).pack(
             anchor="w", padx=12, pady=(10, 2)
         )
         self.run_log = ctk.CTkTextbox(
@@ -65,33 +70,37 @@ class RunPageMixin:
 
         self.result_card = card(right)
         self.result_card.pack(fill="x")
-        self.result_title = label(self.result_card, "No run yet", size=26, bold=True)
+        label(self.result_card, "RUN RESULT", size=10, color=C["muted"], bold=True).pack(
+            anchor="w", padx=14, pady=(14, 0))
+        self.result_title = label(self.result_card, "Ready when you are", size=22, bold=True)
         self.result_title.pack(anchor="w", padx=14, pady=(14, 6))
         self.result_pill = pill(self.result_card, "queued")
+        self.result_pill.configure(text="NOT STARTED", fg_color=C["border"], text_color=C["muted"])
         self.result_pill.pack(anchor="w", padx=14, pady=(0, 14))
 
         stop = card(right)
         stop.pack(fill="x", pady=(10, 0))
-        label(stop, "Where it stopped", size=12, color=C["muted"], bold=True).pack(
+        label(stop, "Last checked location", size=12, color=C["muted"], bold=True).pack(
             anchor="w", padx=12, pady=(10, 2)
         )
         self.result_step = label(stop, "—", size=13)
         self.result_step.pack(anchor="w", padx=12)
-        self.result_url = label(stop, "—", size=11, color=C["muted"])
+        self.result_url = label(stop, "—", size=11, color=C["muted"], wraplength=320, justify="left")
         self.result_url.pack(anchor="w", padx=12, pady=(0, 10))
 
         cause = card(right)
         cause.pack(fill="both", expand=True, pady=(10, 0))
-        label(cause, "Failed test & cause", size=12, color=C["muted"], bold=True).pack(
+        label(cause, "What needs attention", size=12, color=C["muted"], bold=True).pack(
             anchor="w", padx=12, pady=(10, 2)
         )
-        self.result_name = label(cause, "—", size=13)
+        self.result_name = label(cause, "Choose tasks to get started", size=13, wraplength=320, justify="left")
         self.result_name.pack(anchor="w", padx=12)
         self.result_details = label(
-            cause, "—", size=11, color=C["muted"], wraplength=320, justify="left"
+            cause, "Select your regression tasks, then run the agent. Each task gets its own result.",
+            size=11, color=C["muted"], wraplength=320, justify="left"
         )
         self.result_details.pack(anchor="w", padx=12, pady=(2, 12))
-        self.verdict_title = label(cause, "Task verdicts", size=12, bold=True)
+        self.verdict_title = label(cause, "Task results", size=12, bold=True)
         self.verdict_title.pack(anchor="w", padx=12, pady=(0, 4))
         self.task_verdicts = ctk.CTkScrollableFrame(cause, fg_color="transparent")
         self.task_verdicts.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -101,15 +110,19 @@ class RunPageMixin:
         if not hasattr(self, "run_checks"):
             return
         skyvern = self.settings.get("engine") == "skyvern"
+        selected = sum(task.enabled for task in self.tasks)
+        running = self.active_run is not None
+        self.run_destination.configure(text=f"Website: {self.settings.get('base_url') or 'http://localhost:3000'}")
+        self.run_selection_note.configure(text="Task queue" if running else f"Choose tasks · {selected} selected")
+        self.run_start.configure(state="disabled" if running or not selected else "normal")
+        self.run_cancel.configure(state="normal" if running else "disabled")
         self.run_headless.configure(
             text="Show browser live",
             state="disabled" if self.active_run is not None else "normal",
         )
         self.browser_note.configure(text=(
-            "Broad checks: a working flow passes despite unrelated app issues.\n"
-            "Live view opens Skyvern's session in your default browser."
-            if skyvern else "Functional checks: only your requested flow determines the verdict.\n"
-            "Unrelated errors stay in the log. Live view shows a separate browser window."
+            "Skyvern needs a public website URL. Live view opens its cloud browser."
+            if skyvern else "browser-use supports localhost. Live view opens a separate browser window."
         ))
         for child in self.run_checks.winfo_children():
             child.destroy()
@@ -125,8 +138,10 @@ class RunPageMixin:
                     self._task_order_buttons(row, case["id"], position, len(pending), live=True)
             return
         if not self.tasks:
-            label(self.run_checks, "Add a regression task to start testing.", size=12, color=C["muted"]).pack(
+            label(self.run_checks, "Add the customer flow you want to check first.", size=12,
+                  color=C["muted"], wraplength=330, justify="left").pack(
                 anchor="w", pady=8)
+            primary_btn(self.run_checks, "+ Create a regression task", self.add_task).pack(anchor="w", pady=6)
         for index, task in enumerate(self.tasks):
             row = ctk.CTkFrame(self.run_checks, fg_color="transparent")
             row.pack(fill="x", pady=2)
@@ -214,6 +229,8 @@ class RunPageMixin:
         if task is not None:
             task.enabled = enabled
         self.save_state()
+        self.refresh_run()
+        self.refresh_journey()
 
     def _show_result(self, rec) -> None:
         if not hasattr(self, "result_title"):
@@ -225,29 +242,33 @@ class RunPageMixin:
             self._verdict_rows.clear()
             self._verdict_record_id = record_id
         if rec is None:
-            self.result_title.configure(text="No run yet", text_color=C["text"])
-            self.result_pill.configure(text="QUEUED", fg_color=C["violet"])
+            self.result_title.configure(text="Ready when you are", text_color=C["text"])
+            self.result_pill.configure(text="NOT STARTED", fg_color=C["border"], text_color=C["muted"])
             for box in (self.result_step, self.result_url, self.result_name, self.result_details):
                 box.configure(text="—")
             self._show_task_verdicts({})
             return
         rep = rec.report or {}
-        ok = rec.status == "passed"
         self.result_title.configure(
-            text=rec.status.upper(), text_color=C["green"] if ok else C["red"]
+            text=rec.status.upper(), text_color=STATUS_COLORS.get(rec.status, C["text"])
         )
         self.result_pill.configure(
-            text=rec.status.upper(), fg_color=STATUS_COLORS.get(rec.status, C["muted"])
+            text=rec.status.upper(), fg_color=STATUS_COLORS.get(rec.status, C["muted"]), text_color=C["bg"]
         )
         self.result_step.configure(text=f"Step {rep.get('stopped_at_step', 0)}")
         self.result_url.configure(text=rep.get("stopped_url") or "—")
-        self.result_name.configure(text=rep.get("failed_test_name") or "—")
-        self.result_details.configure(text=rep.get("error_details") or "—")
+        self.result_name.configure(text=rep.get("failed_test_name") or (
+            "All selected tasks passed" if rec.status == "passed" else
+            "Checking your customer flows…" if rec.status == "running" else "—"))
+        self.result_details.configure(text=rep.get("error_details") or (
+            "Expected outcomes were verified. Open Run History to revisit this report."
+            if rec.status == "passed" else "Follow the live activity while each task runs."
+            if rec.status == "running" else "—"))
         self._show_task_verdicts(rep)
 
     def _show_task_verdicts(self, report):
         results = report.get("task_results", [])
-        self.verdict_title.configure(text=f"Task verdicts ({len(results)}/{report.get('total_tasks', len(results))})")
+        self.verdict_title.configure(text=f"Task results ({len(results)}/{report.get('total_tasks', len(results))})")
         ids = {result["task_id"] for result in results}
         for task_id in list(self._verdict_rows):
             if task_id not in ids:

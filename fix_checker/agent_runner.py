@@ -204,7 +204,7 @@ class BrowserAgentRunner:
             )
             key = settings.get(key_name) or os.getenv(env_name, "")
             if not key:
-                raise ValueError(f"{provider} API key is missing. Set it in Settings or {env_name}.")
+                raise ValueError(f"{provider} API key is missing. Add it in Home & Setup or set {env_name}.")
             self._step_number = 0
             if not steps.strip():
                 raise ValueError("Add steps and an expected result for this regression task.")

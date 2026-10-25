@@ -9,6 +9,7 @@ import customtkinter as ctk
 
 from fix_checker.agent_runner import BrowserAgentRunner
 from fix_checker.app import DeveloperAppUI
+from fix_checker.page_tasks_settings import EXAMPLE_TASK_NAME, EXAMPLE_TASK_STEPS
 from fix_checker.models import RegressionTask, RunRecord
 from fix_checker.models import SuiteReport, TaskResult, TestReport
 
@@ -37,6 +38,9 @@ def desktop():
         app = DeveloperAppUI()
         app.withdraw()
         try:
+            assert app.title() == "FixGuard"
+            assert app.page_title.cget("text") == "Home & Setup"
+            assert list(app.pages) == ["Home & Setup", "Regression Tasks", "Run Agent", "Run History"]
             for page in app.pages:
                 app.show_page(page)
                 app.update_idletasks()
@@ -64,6 +68,19 @@ def desktop():
             assert app.settings["openai_key"] == "openai-draft"
             app.refresh_settings()
             assert app.set_key.get() == "skyvern-draft"
+            app.set_url.delete(0, "end")
+            app.set_url.insert(0, "not-a-website-url")
+            app.show_page("Home & Setup")
+            app._continue_to_tasks()
+            assert app.page_title.cget("text") == "Home & Setup"
+            assert app.settings["base_url"] == "http://localhost:3000"
+            app.set_url.delete(0, "end")
+            app.set_url.insert(0, "https://example.test/shop")
+            app._continue_to_tasks()
+            assert app.page_title.cget("text") == "Regression Tasks"
+            assert app.settings["base_url"] == "https://example.test/shop"
+            assert "API key added" in app.setup_summary.cget("text")
+            print("PASS: continue saves valid setup before navigating and keeps invalid setup on the form")
             app.show_page("Run Agent")
             assert app.run_headless.cget("state") == "normal"
             print("PASS: provider labels, separate key drafts, save/reload and model availability")
@@ -112,6 +129,10 @@ def desktop():
             print("PASS: Home reuses cards, updates status and filters without rebuilding rows")
             app.home_search.insert(0, "Refresh fixture")
             app.set_repo.insert(0, "unsaved repository draft")
+            app.show_page("Regression Tasks")
+            app.show_page("Home & Setup")
+            assert app.set_repo.get() == "unsaved repository draft"
+            print("PASS: FixGuard opens on guided setup; navigation follows setup, tasks, run, history and preserves drafts")
             with patch("fix_checker.models.time.time", return_value=time.time() + 61):
                 app._refresh_periodic()
             assert "1m ago" in [w.cget("text") for w in descendants(app.hist_list) if isinstance(w, ctk.CTkLabel)]
@@ -145,17 +166,35 @@ def desktop():
             dialog = next(w for w in app.winfo_children() if isinstance(w, ctk.CTkToplevel))
             fields = [w for w in descendants(dialog) if isinstance(w, ctk.CTkEntry)]
             assert len(fields) == 1, "Task dialog must only have the name entry"
-            fields[0].insert(0, "New regression")
+            assert fields[0].get() == ""
             steps = next(w for w in descendants(dialog) if isinstance(w, ctk.CTkTextbox))
-            steps.insert("1.0", "Open the products page and click Save")
+            assert steps.get("1.0", "end").strip() == ""
+            example_button = next(w for w in descendants(dialog) if isinstance(w, ctk.CTkButton)
+                                  and w.cget("text") == "Use this example")
+            example_button.invoke()
+            assert fields[0].get() == EXAMPLE_TASK_NAME
+            assert steps.get("1.0", "end").strip() == EXAMPLE_TASK_STEPS
+            fields[0].delete(0, "end")
+            fields[0].insert(0, "New regression")
+            steps.insert("end", "\nAlso check the result count.")
             save = next(w for w in descendants(dialog) if isinstance(w, ctk.CTkButton) and w.cget("text") == "Save task")
             save.invoke()
             assert app.tasks[-1].name == "New regression"
+            assert app.tasks[-1].steps.endswith("Also check the result count.")
             assert not hasattr(app.tasks[-1], "path")
+            # Existing tasks must open with their own steps, without inserting the example.
+            app.edit_task(app.tasks[-1])
+            app.update()
+            dialog = next(w for w in app.winfo_children() if isinstance(w, ctk.CTkToplevel))
+            fields = [w for w in descendants(dialog) if isinstance(w, ctk.CTkEntry)]
+            steps = next(w for w in descendants(dialog) if isinstance(w, ctk.CTkTextbox))
+            assert fields[0].get() == "New regression"
+            assert steps.get("1.0", "end").strip() == app.tasks[-1].steps
+            dialog.destroy()
             for child in app.winfo_children():
                 if child.winfo_toplevel() == child:
                     child.destroy()
-            print("PASS: all desktop pages and regression task editor opened")
+            print("PASS: task editor shows a usable example; customization saves and existing tasks remain intact")
 
             # Bulk deletion updates the same history used by the sidebar and pending runs.
             app.home_search.delete(0, "end")
@@ -184,6 +223,7 @@ def desktop():
 
             app.tasks = [RegressionTask(name=f"Task {i}", steps="Click Save") for i in range(2)]
             app.show_page("Run Agent")
+            app.geometry("1080x700+0+0")
             app.deiconify()
             app.update()
             sizes = (app.run_checks._parent_canvas.winfo_height(), app.run_log.winfo_height())
@@ -194,10 +234,14 @@ def desktop():
             assert app.run_checks._parent_canvas.yview()[1] < 1
             app.run_checks._parent_canvas.yview_moveto(1)
             assert app.run_checks._parent_canvas.yview()[0] > 0
-            app.geometry("1280x950")
+            larger_height = min(950, app.winfo_screenheight() - 60)
+            app.geometry(f"1080x{larger_height}+0+0")
+            app.after(150, app.quit)
+            app.mainloop()
             app.update()
-            assert app.run_checks._parent_canvas.winfo_height() > sizes[0]
-            assert app.run_log.winfo_height() > sizes[1]
+            if app.winfo_height() > 700:
+                assert app.run_checks._parent_canvas.winfo_height() > sizes[0]
+                assert app.run_log.winfo_height() > sizes[1]
             app.geometry("1080x700")
             app.update()
             assert app.run_checks._parent_canvas.winfo_height() >= 150

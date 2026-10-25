@@ -1,1 +1,1 @@
-"""FIX Checker - AI commit tester."""
+"""FixGuard - AI regression testing after every change."""

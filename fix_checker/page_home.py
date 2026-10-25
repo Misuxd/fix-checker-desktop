@@ -1,20 +1,23 @@
-"""Home page: list of test runs."""
+"""Run History page: queued checks and previous results."""
 from __future__ import annotations
 
 import customtkinter as ctk
 
 from .config import C, STATUS_COLORS
 from .models import time_ago
-from .widgets import card, entry, ghost_btn, label, pill
+from .widgets import card, entry, ghost_btn, label, pill, primary_btn
 
 
 class HomePageMixin:
-    """Pending Checks list with search and filter chips."""
+    """Run history with search, filters and queue controls."""
 
     def _build_home(self, parent) -> None:
         head = card(parent)
         head.pack(fill="x", padx=22, pady=(16, 10))
-        label(head, "Pending Checks", size=16, bold=True).pack(
+        primary_btn(head, "Start a test run →", lambda: self.show_page("Run Agent")).pack(
+            side="right", padx=14, pady=14
+        )
+        label(head, "See what changed. Know what passed.", size=18, bold=True).pack(
             anchor="w", padx=14, pady=(10, 2)
         )
         self.home_count = label(head, "", size=12, color=C["muted"])
@@ -75,7 +78,8 @@ class HomePageMixin:
             rows = [r for r in rows if r.status == self.home_status.get()]
         if self.home_source.get() != "All runs":
             rows = [r for r in rows if r.tag == self.home_source.get()]
-        count_text = f"{len(rows)} run(s)"
+        queued = sum(rec.status == "queued" for rec in rows)
+        count_text = f"{len(rows)} runs · {queued} queued · Open a report to review each task's result."
         if getattr(self, "_home_count_text", None) != count_text:
             self.home_count.configure(text=count_text)
             self._home_count_text = count_text
@@ -136,6 +140,23 @@ class HomePageMixin:
             if cached["position"] != index:
                 cached["frame"].grid(row=index, column=0, sticky="ew", pady=5)
                 cached["position"] = index
+        if not hasattr(self, "home_empty"):
+            self.home_empty = card(self.home_list)
+            self.home_empty_title = label(self.home_empty, "", size=17, bold=True)
+            self.home_empty_title.pack(padx=20, pady=(32, 6))
+            self.home_empty_note = label(self.home_empty, "", size=12, color=C["muted"],
+                                         wraplength=520, justify="center")
+            self.home_empty_note.pack(padx=20, pady=(0, 32))
+        if rows:
+            self.home_empty.grid_remove()
+        else:
+            self.home_empty_title.configure(text="No matching runs" if self.history else "Your first report starts here")
+            self.home_empty_note.configure(text=(
+                "Try another search or change the status and source filters."
+                if self.history else "Set up your website, add a regression task, then run the agent. "
+                "Your results and commit checks will appear here."
+            ))
+            self.home_empty.grid(row=0, column=0, sticky="ew", pady=5)
         self._update_history_actions()
 
     def _create_home_row(self, rec):
@@ -151,7 +172,7 @@ class HomePageMixin:
         cached["title"].pack(side="left")
         cached["status"] = pill(top, rec.status)
         cached["status"].pack(side="right")
-        ghost_btn(top, "View result", lambda: self.view_run(cached["record"])).pack(side="right", padx=8)
+        ghost_btn(top, "View report", lambda: self.view_run(cached["record"])).pack(side="right", padx=8)
         cached["queue_up"] = ghost_btn(top, "↑", lambda: self.move_pending_run(cached["record"].id, -1), width=30)
         cached["queue_down"] = ghost_btn(top, "↓", lambda: self.move_pending_run(cached["record"].id, 1), width=30)
 

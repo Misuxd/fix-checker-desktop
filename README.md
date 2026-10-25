@@ -1,8 +1,8 @@
-# FIX Checker
+# FixGuard
 
 Windows desktop application that tests a website after local Git commits, using
-Skyvern AI or browser-use. The existing Home, Run Agent, Regression Tasks and
-Settings pages are preserved.
+Skyvern AI or browser-use. Follow the sidebar from **Home & Setup** to
+**Regression Tasks**, **Run Agent** and **Run History**.
 
 ## Install without an IDE (Windows, Python 3.12+)
 
@@ -11,35 +11,42 @@ Settings pages are preserved.
 
 ## Configure and run
 
-1. Open Settings and choose a browser engine. Skyvern is the default: enter your
+1. Open **Home & Setup**, enter your website URL and choose a browser engine. Skyvern is the default: enter your
    **Skyvern API key** (or set `SKYVERN_API_KEY` before starting the app). For
    browser-use, enter your **OpenAI API key** (or set `OPENAI_API_KEY`) and model
    `gpt-6-luna`. Each engine's key is stored separately; changing engines updates
    the sidebar AI name immediately and preserves both keys. The selected engine
-   applies immediately; save changes to key, model and other fields separately.
+   applies immediately; apply key, model and website changes with **Save setup**.
 2. Enter the base URL of your running site and select a local Git repository.
    Skyvern Cloud needs a publicly reachable site URL. Use browser-use for
-   localhost sites. Save settings.
-3. In Regression Tasks, add or edit each flow's name and precise steps, including
+   localhost sites. Git is optional for manual runs. Save setup, or use
+   **Continue to Regression Tasks** to save and move to the next step.
+3. In **Regression Tasks**, add or edit each flow's name and precise steps, including
    navigation, prerequisites, test credentials if needed and expected results.
-4. In Run Agent, select the regression tasks to run. Runs start at the exact Base site URL from Settings;
+   The editor shows a product-search example. **Use this example** fills the name
+   and steps so you can adapt them to your own website before saving.
+4. In **Run Agent**, select the regression tasks to run. Runs start at the exact Website URL from Home & Setup;
    describe any further navigation in the test steps.
 5. Enable Show browser live before launching to watch the run. With browser-use,
    this opens a local Chromium window; with Skyvern, it opens the cloud session's
    live viewer in your default browser (sign in to Skyvern if prompted). With the
    switch off, runs still produce step logs without opening a browser window or
-   viewer. The switch is locked during a run. Launch the agent or use Test latest
-   commit. Cancel also requests cancellation of an active Skyvern Cloud run.
+   viewer. The switch is locked during a run. Choose **Run selected tasks** or use
+   **Test latest commit**. **Stop run** also cancels an active Skyvern Cloud run.
+6. Open **Run History** to search previous runs, filter by status and source,
+   review reports, or manage queued commit checks. Home & Setup shows saved
+   API-key and task counts; it does not verify provider connectivity. Setup drafts
+   remain in place when you switch tabs until you save or close the app.
 
 The monitor polls local HEAD every three seconds; it does not poll GitHub's API.
 New commits queue while a test is running. Use the up/down arrows on a queued
-Home card to change the order of waiting commit runs. The selected repo can be changed or
-cleared in Settings. Checking a commit does not build, deploy or switch the site
+Run History card to change the order of waiting commit runs. The selected repo can be changed or
+cleared in Home & Setup. Checking a commit does not build, deploy or switch the site
 itself: the website URL must already serve the version you intend to verify.
 
 ## Engines and reports
 
-Skyvern uses its cloud API, authenticating with the Skyvern API key from Settings.
+Skyvern uses its cloud API, authenticating with the Skyvern API key from Home & Setup.
 Skyvern manages the browser and model; the OpenAI model setting applies only to
 browser-use. Skyvern runs in a separate process and streams status logs to the
 application's background asyncio worker. Cloud browsers cannot reach your
@@ -96,22 +103,22 @@ failure reports use the failing resource URL. Without test credentials the agent
 must report failure rather than inventing an account. AI-driven checks still
 require review of the recorded evidence and clear expected outcomes.
 
-Home supports search, status/source filters and viewing historical reports.
+Run History supports search, status/source filters and viewing historical reports.
 Each card has a selection checkbox. Select all selects the currently filtered
-cards; Delete selected removes them from Home, the sidebar and saved history.
+cards; Delete selected removes them from Run History, the sidebar and saved history.
 Deleting a waiting commit run also removes it from the pending queue. The active
 run is protected until it finishes.
-Home reuses existing run cards and groups rapid search input, keeping navigation,
+Run History reuses existing run cards and groups rapid search input, keeping navigation,
 filtering and status updates responsive as history grows.
-History and Home refresh every 60 seconds, including relative timestamps, and
+The sidebar and Run History refresh every 60 seconds, including relative timestamps, and
 update immediately when a run starts or finishes or a commit arrives. This
 refresh preserves form drafts and search/filter selections.
 New manual runs never overwrite earlier results. Incoming commits cannot take
 ownership of an already-running test's result.
 
-Settings, selected tasks and up to 50 history entries live in `settings.json`,
+Setup, selected tasks and up to 50 history entries live in `settings.json`,
 `tasks.json` and `history.json` in the project directory, independently of the
-working directory. The key field is masked; provider keys saved through Settings
+working directory. The key field is masked; provider keys saved through Home & Setup
 are stored as plaintext in settings.json. Local state, credentials, environments and
 agent artifacts are excluded by .gitignore. No API key ships with the project.
 

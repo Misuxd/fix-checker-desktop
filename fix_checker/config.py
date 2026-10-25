@@ -6,7 +6,7 @@ TASKS_FILE = APP_DIR / "tasks.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
 HISTORY_FILE = APP_DIR / "history.json"
 
-# Near-black palette, matching the FIX Checker mock-up.
+# FixGuard's near-black palette.
 C = {
     "bg": "#0a0c0f",
     "panel": "#0f1216",

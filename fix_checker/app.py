@@ -19,24 +19,28 @@ from .page_run import RunPageMixin
 from .page_tasks_settings import TasksSettingsMixin
 from .widgets import card, label, primary_btn
 
-PAGES = ("Home", "Run Agent", "Regression Tasks", "Settings")
+PAGES = ("Home & Setup", "Regression Tasks", "Run Agent", "Run History")
 
 
 class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
-    """FIX Checker: runs an AI browser test after every commit."""
+    """FixGuard: runs an AI browser test after every commit."""
 
     REFRESH = {
-        "Home": "refresh_home",
+        "Home & Setup": "refresh_settings",
+        "Run History": "refresh_home",
         "Run Agent": "refresh_run",
         "Regression Tasks": "refresh_tasks",
-        "Settings": "refresh_settings",
     }
 
     def __init__(self) -> None:
         super().__init__()
         ctk.set_appearance_mode("dark")
-        self.title("FIX Checker")
-        self.geometry("1280x820")
+        self.title("FixGuard")
+        width = max(1080, min(1280, self.winfo_screenwidth() - 80))
+        height = max(700, min(820, self.winfo_screenheight() - 100))
+        x = max(0, (self.winfo_screenwidth() - width) // 2)
+        y = max(0, (self.winfo_screenheight() - height) // 2 - 30)
+        self.geometry(f"{width}x{height}+{x}+{y}")
         self.minsize(1080, 700)
         self.configure(fg_color=C["bg"])
 
@@ -53,7 +57,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
 
         self._build_shell()
         self._build_pages()
-        self.show_page("Home")
+        self.show_page("Home & Setup")
         if self.settings.get("repo_path"):
             self.monitor.start(self.settings["repo_path"])
         self.after(200, self._pump)
@@ -127,7 +131,13 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         ctk.CTkLabel(
             brand, text="◆", text_color=C["accent"], font=(FONT, 20, "bold")
         ).pack(side="left")
-        label(brand, "FIX Checker", size=16, bold=True).pack(side="left", padx=8)
+        label(brand, "FixGuard", size=20, bold=True).pack(side="left", padx=8)
+        label(sidebar, "Confidence after every change.", size=12, color=C["muted"]).pack(
+            anchor="w", padx=22, pady=(0, 22)
+        )
+        label(sidebar, "YOUR WORKFLOW", size=10, color=C["muted"], bold=True).pack(
+            anchor="w", padx=22, pady=(0, 8)
+        )
 
         self.nav = {}
         for name in PAGES:
@@ -140,23 +150,22 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
                 text_color=C["muted"],
                 font=(FONT, 14),
                 corner_radius=8,
-                height=34,
+                height=40,
                 command=lambda n=name: self.show_page(n),
             )
             btn.pack(fill="x", padx=14, pady=2)
             self.nav[name] = btn
 
         hist_card = card(sidebar)
-        hist_card.pack(fill="both", expand=True, padx=14, pady=(14, 8))
-        label(hist_card, "Last fixes verified", size=12, color=C["muted"], bold=True).pack(
+        label(hist_card, "Recent runs", size=12, color=C["muted"], bold=True).pack(
             anchor="w", padx=12, pady=(10, 4)
         )
-        self.hist_list = ctk.CTkScrollableFrame(hist_card, fg_color="transparent")
+        self.hist_list = ctk.CTkScrollableFrame(hist_card, fg_color="transparent", height=100)
         self.hist_list.pack(fill="both", expand=True, padx=6, pady=(0, 8))
 
         ai = card(sidebar)
-        ai.pack(fill="x", padx=14, pady=(0, 14))
-        label(ai, "AI", size=12, color=C["muted"], bold=True).pack(
+        ai.pack(side="bottom", fill="x", padx=14, pady=(0, 14))
+        label(ai, "TEST AGENT", size=10, color=C["muted"], bold=True).pack(
             anchor="w", padx=12, pady=(10, 0)
         )
         model = "Skyvern" if self.settings["engine"] == "skyvern" else "browser-use"
@@ -165,6 +174,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         primary_btn(ai, "Test latest commit", self.test_latest).pack(
             fill="x", padx=12, pady=(8, 12)
         )
+        hist_card.pack(fill="both", expand=True, padx=14, pady=(14, 8))
 
         main = ctk.CTkFrame(self, fg_color=C["bg"])
         main.pack(side="left", fill="both", expand=True)
@@ -172,9 +182,9 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         top = ctk.CTkFrame(main, height=52, fg_color=C["bg"], corner_radius=0)
         top.pack(fill="x")
         top.pack_propagate(False)
-        self.page_title = label(top, "Home", size=17, bold=True)
+        self.page_title = label(top, "Home & Setup", size=17, bold=True)
         self.page_title.pack(side="left", padx=22)
-        self.sync_dot = label(top, "● Repo synced", size=12, color=C["muted"])
+        self.sync_dot = label(top, "", size=12, color=C["muted"])
         self.sync_dot.pack(side="right", padx=22)
 
         self.container = ctk.CTkFrame(main, fg_color=C["bg"])
@@ -182,10 +192,10 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
 
     def _build_pages(self) -> None:
         self.pages = {name: ctk.CTkFrame(self.container, fg_color=C["bg"]) for name in PAGES}
-        self._build_home(self.pages["Home"])
+        self._build_home(self.pages["Run History"])
         self._build_run(self.pages["Run Agent"])
         self._build_tasks(self.pages["Regression Tasks"])
-        self._build_settings(self.pages["Settings"])
+        self._build_settings(self.pages["Home & Setup"])
         self.refresh_history()
 
     def show_page(self, name: str) -> None:
@@ -201,6 +211,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
         method = getattr(self, self.REFRESH[name], None)
         if method:
             method()
+        self.refresh_journey()
 
     # -- events ------------------------------------------------------------
     def _refresh_periodic(self) -> None:
@@ -288,8 +299,9 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
             self.refresh_history()
             self.launch_agent(rec)
         else:
-            self._append_log("No repo selected - open Settings and pick your Git repo folder.")
-            self.show_page("Settings")
+            self._append_log("Choose a Git repository in Home & Setup to test its latest commit.")
+            self.show_page("Home & Setup")
+            self.settings_note.configure(text="Choose and save a Git repository to test its latest commit.")
 
     def _finish_run(self, report) -> None:
         rec = self.active_run
@@ -332,6 +344,7 @@ class DeveloperAppUI(HomePageMixin, RunPageMixin, TasksSettingsMixin, ctk.CTk):
             )
             label(row, time_ago(rec.started), size=11, color=C["muted"]).pack(side="right")
         self.refresh_home()
+        self.refresh_journey()
 
     # -- shutdown ----------------------------------------------------------
     def _on_close(self) -> None:
