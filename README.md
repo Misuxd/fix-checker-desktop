@@ -48,12 +48,13 @@ tunnel. When live viewing is enabled, a dedicated Skyvern browser session is
 created for each task and closed when that task finishes or is cancelled.
 browser-use operates on an isolated local Chromium profile, including for
 localhost sites, and uses its native ChatOpenAI adapter with the OpenAI key.
-Choose browser-use for detailed diagnostics: observed page/console errors and
-HTTP 404/5xx failures can fail a task even when the requested function works,
-exposing other bugs in the app. Choose Skyvern for a broader functional check:
-the requested flow passes when its expected outcome works, and unrelated console
-errors, failed background requests or cosmetic issues do not fail the task.
-The engine descriptions in Settings and Run Agent explain this distinction.
+Both engines judge only the user-provided regression task and its expected
+outcome. A working, verified flow passes. Unrelated console/page errors, failed
+background requests or cosmetic issues do not automatically fail the task.
+browser-use retains detailed execution and browser diagnostic logs; Skyvern
+provides functional checks through its cloud browser. The agent must not invent
+extra tests or login requirements. A blocked flow, unmet expected outcome or
+inability to verify that outcome still produces FAILED with an explanation.
 
 The desktop event pump receives worker messages through queues. Browsing and AI
 calls run outside the Tk thread. Each selected task runs separately in a fresh
@@ -72,9 +73,10 @@ Regression Tasks or Run Agent to save a task order before launching. During a ru
 the arrows reorder tasks that are still waiting; completed/running tasks stay in
 place. Changing the live queue does not change the saved order for future runs.
 
-For browser-use, an observed JavaScript/console error, HTTP 404 or HTTP 5xx fails
-the current task with the URL, current agent step and error, then continues the
-queue. Skyvern Cloud follows the test instructions and returns its structured
+For browser-use, observed JavaScript/console errors and HTTP 404/5xx responses are
+recorded in the live log without stopping execution or overriding the task's
+verdict. The agent determines whether the requested outcome was met. Skyvern
+Cloud follows the same task criteria and returns its structured
 report; local browser diagnostic listeners do not attach to cloud runs.
 Only a validated structured agent result can produce PASSED:
 
@@ -122,7 +124,7 @@ agent artifacts are excluded by .gitignore. No API key ships with the project.
 ```
 
 Unit tests cover strict report validation, URLs, selected flows, persistence,
-Git monitor restarts, concurrency, cancellation, first-error stopping and run
+Git monitor restarts, concurrency, cancellation, task-scoped verdicts and run
 ownership. Desktop smoke checks open every page and the task editor, run a local
 fixture in real Chromium, attach browser-use and verify console/HTTP diagnostics.
 The browser-use agent smoke uses simulated LLM responses and real browser actions.

@@ -119,23 +119,15 @@ class BrowserAgentRunner:
         base = settings.get("base_url") or "http://localhost:3000"
         lines = [f"Target page: {target_url(base)}",
                  f"Regression task: {settings.get('task_name', 'Selected task')}", steps.strip()]
-        if settings.get("engine") == "skyvern":
-            lines += [
-                "Use a broad functional check of the requested flow and its expected outcome.",
-                "If the requested flow works, return PASSED. Do not fail the task for unrelated console errors,",
-                "warnings, failed background requests or cosmetic issues that do not block the expected outcome.",
-                "Return FAILED when the requested flow is blocked or its expected outcome is not met.",
-            ]
-        else:
-            lines += [
-                "Use detailed checks: verify expected outcomes, missing elements, page errors, console errors and HTTP 404/500.",
-                "Report other observed bugs in the app even if the requested flow works.",
-                "An observed page error, console error, HTTP 404 or HTTP 5xx makes this task FAILED, even if its functional outcome succeeds.",
-            ]
         lines += [
+            "Check ONLY the user-provided regression task and its expected outcome. Do not invent extra tests or requirements.",
+            "If the requested flow works and its expected outcome is verified, return PASSED.",
+            "Unrelated console errors, page errors, warnings, failed background requests or cosmetic issues are observations, not failure criteria.",
+            "Return FAILED only when the requested flow is blocked, its stated expected outcome is not met, or that outcome cannot be verified.",
             "Act as a real user. Execute this test; never invent credentials or evidence.",
             "If this test fails, return FAILED with evidence. Do not repair the site or bypass assertions.",
-            "If prerequisites or credentials are missing, report FAILED and explain what is missing.",
+            "Do not add login, credential or prerequisite requirements that the requested flow does not need.",
+            "Missing prerequisites cause FAILED only when they actually prevent executing or verifying the requested task; explain the blocker.",
             "Return PASSED only when this test was executed and its expected outcome verified under the selected check policy.",
             "Return ONLY JSON matching the report schema: status (PASSED/FAILED), stopped_at_step",
             "(integer), stopped_url, failed_test_name and error_details. Identify the exact failing",
@@ -223,27 +215,8 @@ class BrowserAgentRunner:
                     settings["show_browser"] = not headless
                     report = await self._skyvern(settings, key, url, prompt)
                 else:
-                    error_event = asyncio.Event()
-                    async with self._browser(headless, diagnostics, error_event) as address:
-                        work = asyncio.create_task(self._browser_use(settings, key, prompt, address))
-                        failure = asyncio.create_task(error_event.wait())
-                        try:
-                            await asyncio.wait([work, failure], return_when=asyncio.FIRST_COMPLETED)
-                            if diagnostics:
-                                work.cancel()
-                                await asyncio.gather(work, return_exceptions=True)
-                                first = diagnostics[0]
-                                report = TestReport(
-                                    status="FAILED", stopped_at_step=first["step"],
-                                    stopped_url=first["url"], failed_test_name="Browser diagnostics",
-                                    error_details=first["text"],
-                                )
-                            else:
-                                report = await work
-                        finally:
-                            work.cancel()
-                            failure.cancel()
-                            await asyncio.gather(work, failure, return_exceptions=True)
+                    async with self._browser(headless, diagnostics) as address:
+                        report = await self._browser_use(settings, key, prompt, address)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -260,7 +233,7 @@ class BrowserAgentRunner:
                           failed_test_name="Agent execution", error_details=text)
 
     @asynccontextmanager
-    async def _browser(self, headless, diagnostics, error_event=None):
+    async def _browser(self, headless, diagnostics):
         from playwright.async_api import async_playwright
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
@@ -276,8 +249,6 @@ class BrowserAgentRunner:
                         if len(diagnostics) < 100:
                             diagnostics.append(item)
                         self._log(f"Browser error at {item['url']}: {text}")
-                        if error_event is not None:
-                            error_event.set()
                     page.on("pageerror", lambda error: record(str(error)))
                     page.on("console", lambda msg: record(msg.text) if msg.type == "error" else None)
                     page.on("response", lambda response: record(

@@ -48,14 +48,15 @@ class ReportsAndPaths(unittest.TestCase):
         self.assertIn("SELECTED", text)
         self.assertNotIn("Current fix", text)
 
-    def test_engine_prompts_have_distinct_pass_fail_policies(self):
-        broad = BrowserAgentRunner.build_prompt({"engine": "skyvern"}, "Click Save")
-        detailed = BrowserAgentRunner.build_prompt({"engine": "browser-use"}, "Click Save")
-        self.assertIn("If the requested flow works, return PASSED", broad)
-        self.assertIn("Do not fail the task for unrelated console errors", broad)
-        self.assertNotIn("makes this task FAILED", broad)
-        self.assertIn("even if the requested flow works", detailed)
-        self.assertIn("makes this task FAILED", detailed)
+    def test_both_engines_judge_only_the_requested_flow(self):
+        for engine in ("browser-use", "skyvern"):
+            with self.subTest(engine=engine):
+                prompt = BrowserAgentRunner.build_prompt({"engine": engine}, "Click Save")
+                self.assertIn("Check ONLY the user-provided regression task", prompt)
+                self.assertIn("If the requested flow works and its expected outcome is verified, return PASSED", prompt)
+                self.assertIn("observations, not failure criteria", prompt)
+                self.assertIn("Do not invent extra tests or requirements", prompt)
+                self.assertNotIn("makes this task FAILED", prompt)
 
     def test_atomic_storage_and_corrupt_input(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -202,30 +203,23 @@ class RunnerLifecycle(unittest.TestCase):
         self.assertEqual(self.done().status, "FAILED")
         self.assertTrue(cleaned.is_set())
 
-    def test_http_failure_stops_agent_and_preserves_first_error(self):
-        cancelled = threading.Event()
+    def test_browser_diagnostics_never_override_the_requested_task_verdict(self):
         @asynccontextmanager
-        async def browser(headless, diagnostics, error_event):
-            async def error():
-                await asyncio.sleep(0.05)
-                diagnostics.append(dict(url="http://localhost/broken", step=2, text="HTTP 500"))
-                error_event.set()
-            task = asyncio.create_task(error())
-            try:
-                yield "http://localhost:1234"
-            finally:
-                await task
-        async def engine(*args):
-            try:
-                await asyncio.sleep(60)
-            finally:
-                cancelled.set()
+        async def browser(headless, diagnostics):
+            diagnostics.append(dict(url="http://localhost/background", step=2, text="HTTP 500"))
+            yield "http://localhost:1234"
         self.runner._browser = browser
-        self.runner._browser_use = engine
-        self.runner.submit({"base_url": "http://localhost", "openai_key": "dummy"}, regression(), True)
-        result = self.done()
-        self.assertEqual((result.status, result.stopped_at_step, result.error_details), ("FAILED", 2, "HTTP 500"))
-        self.assertTrue(cancelled.is_set())
+        for status in ("PASSED", "FAILED"):
+            with self.subTest(status=status):
+                task_report = report(status)
+                if status == "FAILED":
+                    task_report.error_details = "The requested Save confirmation is missing."
+                self.runner._browser_use = AsyncMock(return_value=task_report)
+                self.runner.submit({"base_url": "http://localhost", "openai_key": "dummy"}, regression(), True)
+                result = self.done()
+                self.assertEqual(result.status, status)
+                self.assertEqual(result.task_results[0].error_details, task_report.error_details)
+                self.runner._browser_use.assert_awaited_once()
 
     def test_only_enabled_regression_tasks_run_without_a_synthetic_current_fix(self):
         self.runner._skyvern = AsyncMock(return_value=report())

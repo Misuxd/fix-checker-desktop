@@ -49,7 +49,7 @@ def desktop():
             assert app.set_key_label.cget("text") == "OpenAI API key"
             assert app.ai_model.cget("text") == "browser-use"
             assert app.settings["engine"] == "browser-use"
-            assert "other bugs in the app" in app.set_engine_note.cget("text")
+            assert "logged without failing the task" in app.set_engine_note.cget("text")
             assert app.set_key.get() == ""
             assert app.set_model.cget("state") == "normal"
             app.set_key.insert(0, "openai-draft")
@@ -292,21 +292,25 @@ async def browser():
                     page = await remote.contexts[0].new_page()
                     if settings["task_name"] == "Broken page":
                         await page.goto(url + "/broken")
-                        await asyncio.sleep(60)  # HTTP diagnostics must stop this task.
+                        assert await page.locator("#save").count() == 0
+                        return TestReport(status="FAILED", stopped_at_step=1, stopped_url=page.url,
+                            failed_test_name="Broken page", error_details="Requested Save button missing (HTTP 500 page).")
                     else:
                         await page.goto(url)
                         await page.click("#save")
                         assert await page.locator("#save").inner_text() == "Saved"
                         if settings["task_name"] == "Working flow with console bug":
                             await page.evaluate("console.error('Unrelated fixture bug')")
-                            await asyncio.sleep(60)  # A working flow still fails detailed diagnostics.
+                            await page.evaluate("fetch('/broken').then(response => response.status)")
+                            await page.evaluate("setTimeout(() => { throw new Error('Unrelated page exception'); }, 0)")
+                            await page.wait_for_timeout(100)
                         return TestReport(status="PASSED", stopped_at_step=1, stopped_url=url,
                                           failed_test_name="", error_details="")
                 finally:
                     await remote.close()
         runner._browser_use = task_engine
         runner.submit(dict(base_url=url, openai_key="dummy"), [
-            RegressionTask(name="Broken page", steps="Open the broken page"),
+            RegressionTask(name="Broken page", steps="Open the broken page and verify the Save button exists"),
             RegressionTask(name="Working flow with console bug", steps="Click Save and verify Saved"),
             RegressionTask(name="Working page", steps="Click Save and verify Saved"),
         ], True)
@@ -315,11 +319,12 @@ async def browser():
         while not runner.steps.empty():
             events.append(runner.steps.get_nowait())
         suite = next(event["report"] for event in events if event["kind"] == "done")
-        assert [result.status for result in suite.task_results] == ["FAILED", "FAILED", "PASSED"]
+        assert [result.status for result in suite.task_results] == ["FAILED", "PASSED", "PASSED"]
         assert "HTTP 500" in suite.task_results[0].error_details
-        assert "Unrelated fixture bug" in suite.task_results[1].error_details
-        print("PASS: real HTTP 500 fails the first task, then the next task clicks Save and passes")
-        print("PASS: a working Save flow still fails browser-use checks when another console bug is observed")
+        log = "\n".join(event.get("text", "") for event in events if event["kind"] == "log")
+        assert "Unrelated fixture bug" in log and "Unrelated page exception" in log and "HTTP 500" in log
+        print("PASS: an unmet requested outcome fails; the queue continues with passing tasks")
+        print("PASS: a working Save flow passes despite console/page errors and a failed background request; diagnostics stay in the log")
     finally:
         server.shutdown()
         server.server_close()

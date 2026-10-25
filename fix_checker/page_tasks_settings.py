@@ -179,8 +179,9 @@ class TasksSettingsMixin:
         self.set_engine_note.configure(text=(
             "Broad functional checks: if the requested flow works, it passes. Unrelated app issues do not fail the task. "
             "Skyvern uses a cloud browser and needs a publicly reachable site URL."
-            if skyvern else "Detailed checks: reports console errors, page errors and failed requests, including other bugs in the app. "
-            "These can fail a task even when the requested flow works. Uses your OpenAI API key and a local browser."
+            if skyvern else "Functional checks with detailed logs: passes when your requested flow works. "
+            "Unrelated page, console or background request errors are logged without failing the task. "
+            "Uses your OpenAI API key and a local browser."
         ))
         self.set_model.configure(state="disabled" if skyvern else "normal")
         self.ai_model.configure(text="Skyvern" if skyvern else "browser-use")

@@ -108,8 +108,8 @@ class RunPageMixin:
         self.browser_note.configure(text=(
             "Broad checks: a working flow passes despite unrelated app issues.\n"
             "Live view opens Skyvern's session in your default browser."
-            if skyvern else "Detailed checks: other app bugs can fail a task even if its flow works.\n"
-            "Live view shows a separate browser window."
+            if skyvern else "Functional checks: only your requested flow determines the verdict.\n"
+            "Unrelated errors stay in the log. Live view shows a separate browser window."
         ))
         for child in self.run_checks.winfo_children():
             child.destroy()
